@@ -1,6 +1,27 @@
 # emptyDrops analysis of unfiltered counts data for intelligent labeling of cell barcodes
 # C Heiser, August 2019
 
+# usage: emptyDrops.r [-h] [-cxg] [-l LOWER] [-fdr FDRTHRESH] [-o OUTPUT]
+# [-rn ROWNAMES]
+# counts
+# 
+# positional arguments:
+#   counts                Path to counts matrix as .tsv or .csv file
+# 
+# optional arguments:
+#   -h, --help            show this help message and exit
+# -cxg, --cellxgene     Counts file in cell x gene format (cells as rows)?
+#   -l LOWER, --lower LOWER
+# Total UMI cutoff for determining empty droplets
+# -fdr FDRTHRESH, --fdrthresh FDRTHRESH
+# Threshold for determining empty droplet from returned
+# FDR value
+# -o OUTPUT, --output OUTPUT
+# Output location for emptyDrops analysis
+# -rn ROWNAMES, --rownames ROWNAMES
+# Column ID containing rownames in counts file
+
+
 rm(list=ls()) # clear workspace
 suppressPackageStartupMessages(require(argparse))
 suppressPackageStartupMessages(require(tidyverse))
@@ -27,12 +48,12 @@ run.emptyDrops <- function(m, lower, FDR.thresh=0.01, ...){
 }
 
 
-read.counts <- function(path, transpose=F){
+read.counts <- function(path, transpose=F, row.names=NULL){
   start.time <- Sys.time()
   if(str_detect(string = path, pattern = '.csv')){
-    counts <- read.csv(path)
+    counts <- read.csv(path, row.names=row.names)
   }else if(str_detect(string = path, pattern = '.tsv')){
-    counts <- read.csv(path, sep = '\t')
+    counts <- read.csv(path, sep = '\t', row.names=row.names)
   }
   
   if(transpose){
@@ -41,7 +62,6 @@ read.counts <- function(path, transpose=F){
   print(Sys.time() - start.time) # print file reading time
   return(counts)
 }
-
 
 
 if(!interactive()){
@@ -59,6 +79,8 @@ if(!interactive()){
                       help='Threshold for determining empty droplet from returned FDR value')
   parser$add_argument('-o', '--output', default='./emptydrops.csv',
                       help='Output location for emptyDrops analysis')
+  parser$add_argument('-rn', '--rownames', default=NULL,
+                      help='Column ID containing rownames in counts file')
   
   # get command line options, if help encountered print help and exit,
   #   otherwise if options not found on command line, set defaults
@@ -66,11 +88,11 @@ if(!interactive()){
   
   # read counts data into df
   message('\nReading in file: ', args$counts)
-  counts <- read.counts(path = args$counts, transpose = args$cellxgene)
+  counts <- read.counts(path = args$counts, transpose = args$cellxgene, row.names = args$rownames)
   
   # perform emptyDrops analysis
   message('\nRunning emptyDrops...')
-  out <- run.emptyDrops(m = as.matrix(counts), lower = as.numeric(args$lower), FDR.thresh = as.numeric(args$fdrthresh))
+  out <- run.emptyDrops(m = counts, lower = as.numeric(args$lower), FDR.thresh = as.numeric(args$fdrthresh))
   
   # write to file
   message('\nWriting to file: ', args$output)
