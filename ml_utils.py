@@ -6,11 +6,13 @@ Utility functions for ML classifiers
 import numpy as np
 import pandas as pd
 from scipy import interp
+from itertools import cycle
 
 # sklearn tools
-from sklearn.preprocessing import normalize
-from sklearn.model_selection import KFold, StratifiedKFold
+from sklearn.preprocessing import normalize, label_binarize
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
 from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.multiclass import OneVsRestClassifier
 # load sklearn classifiers
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.neighbors import KNeighborsClassifier
@@ -126,10 +128,10 @@ def cm_metrics(cm, pretty_print=False):
 
 
 def roc_kfold(clf, X, y, k, seed=None):
-    '''Run classifier with cross-validation and plot ROC curves'''
+    '''Run binary classifier with cross-validation and plot ROC curves'''
     tprs = []
     aucs = []
-    cm = np.array([[0,0],[0,0]])
+    cm = np.zeros((len(y.unique()),len(y.unique())))
     out = {'acc':[], 'prec':[], 'sens':[], 'spec':[]}
     mean_fpr = np.linspace(0, 1, 100)
 
@@ -183,3 +185,68 @@ def roc_kfold(clf, X, y, k, seed=None):
 
     plot_cm(cm)
     return out
+
+
+def multiclass_roc(clf, X_train, X_test, y_train, y_test, plot_out=True):
+    '''Run multiclass classifier and plot ROC curves'''
+    # binarize output
+    y_train = label_binarize(y_train, classes=y_train.unique())
+    y_test = label_binarize(y_test, classes=y_test.unique())
+
+    # get expected number of classes from labels
+    n_classes = y_train.shape[1]
+
+    # use onevsrest method
+    clf = OneVsRestClassifier(clf)
+
+    # determine ROC scores
+    y_score = clf.fit(X_train, y_train).decision_function(X_test)
+
+    # compute ROC curve and area for each class
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+    for i in range(n_classes):
+        fpr[i], tpr[i], _ = roc_curve(y_test[:, i], y_score[:, i])
+        roc_auc[i] = auc(fpr[i], tpr[i])
+
+    # compute micro-avg ROC curve and area
+    fpr['micro'], tpr['micro'], _ = roc_curve(y_test.ravel(), y_score.ravel())
+    roc_auc['micro'] = auc(fpr['micro'], tpr['micro'])
+
+    # compute macro-avg ROC curve and area
+    # aggregate all false positive rates
+    all_fpr = np.unique(np.concatenate([fpr[i] for i in range(n_classes)]))
+
+    # interpolate all ROC curves
+    mean_tpr = np.zeros_like(all_fpr)
+    for i in range(n_classes):
+        mean_tpr += interp(all_fpr, fpr[i], tpr[i])
+
+    # average and compute AUC
+    mean_tpr /= n_classes
+
+    fpr["macro"] = all_fpr
+    tpr["macro"] = mean_tpr
+    roc_auc["macro"] = auc(fpr["macro"], tpr["macro"])
+
+    if plot_out:
+        # Plot all ROC curves
+        plt.figure()
+        plt.plot([0, 1], [0, 1], 'k--', lw=3)
+        plt.plot(fpr["micro"], tpr["micro"], label='micro-avg ROC (area = {0:0.2f})'.format(roc_auc["micro"]), color='deeppink', linestyle=':', linewidth=4)
+
+        plt.plot(fpr["macro"], tpr["macro"],label='macro-avg ROC (area = {0:0.2f})'.format(roc_auc["macro"]), color='navy', linestyle=':', linewidth=4)
+
+        colors = cycle(['aqua', 'darkorange', 'cornflowerblue'])
+        for i, color in zip(range(n_classes), colors):
+            plt.plot(fpr[i], tpr[i], color=color, lw=3, label='ROC curve of class {0} (area = {1:0.2f})'.format(i, roc_auc[i]))
+
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.legend(loc='best')
+        plt.show()
+
+    return roc_auc
