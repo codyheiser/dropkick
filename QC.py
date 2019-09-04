@@ -5,7 +5,7 @@ import matplotlib.pylab as plt
 from scipy import stats
 
 def find_inflection(ann_data, inflection_percentiles = [0,15,30,100]):
-    ann_data_cumsum = np.cumsum(ann_data.obs['n_counts'])
+    ann_data_cumsum = np.cumsum(ann_data.obs['total_counts'])
     x_vals=np.arange(0,ann_data.obs.shape[0])
     secant_coef=ann_data_cumsum[ann_data.obs.shape[0]-1]/ann_data.obs.shape[0]
     secant_line=secant_coef*x_vals
@@ -24,11 +24,11 @@ def find_inflection(ann_data, inflection_percentiles = [0,15,30,100]):
     print("Inflection point at {} for {} percentiles of greatest secant distances".format(percentile_points,inflection_percentiles))
     
 def reorder_AnnData(AnnData, descending = True):
-    AnnData.obs['n_counts'] = AnnData.X.sum(axis=1)
+    AnnData.obs['total_counts'] = AnnData.X.sum(axis=1)
     if(descending==True):
-        new_order = np.argsort(AnnData.obs['n_counts'])[::-1]
+        new_order = np.argsort(AnnData.obs['total_counts'])[::-1]
     elif(descending==False):
-        new_order = np.argsort(AnnData.obs['n_counts'])[:]
+        new_order = np.argsort(AnnData.obs['total_counts'])[:]
     AnnData.X = AnnData.X[new_order,:].copy()
     AnnData.obs = AnnData.obs.iloc[new_order].copy()
 

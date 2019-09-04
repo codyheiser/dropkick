@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 '''
-Utility functions for ML classifiers
+Utility functions for machine learning classifiers
+
+@author: C Heiser
+Sep 2019
 '''
 # basic matrix/dataframe manipulation
 import numpy as np
 import pandas as pd
 from scipy import interp
 from itertools import cycle
-
+import scanpy as sc
 # sklearn tools
 from sklearn.preprocessing import normalize, label_binarize
 from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
@@ -19,12 +22,69 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
 from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
-
 # plotting tools
 import matplotlib.pyplot as plt
 import seaborn as sns; sns.set(style = 'white')
 
 
+
+# scanpy functions
+def reorder_adata(adata, descending = True):
+    '''place cells in descending order of total counts'''
+    if(descending==True):
+        new_order = np.argsort(adata.X.sum(axis=1))[::-1]
+    elif(descending==False):
+        new_order = np.argsort(adata.X.sum(axis=1))[:]
+    adata.X = adata.X[new_order,:].copy()
+    adata.obs = adata.obs.iloc[new_order].copy()
+
+
+def gf_icf(adata):
+    '''return GF-ICF scores for each element in anndata counts matrix'''
+    tf = adata.X.T / adata.X.sum(axis=1)
+    tf = tf.T
+    
+    ni = adata.X.astype(bool).sum(axis=0)
+    idf = np.log(adata.n_obs / (ni+1))
+    
+    adata.layers['gf-icf'] = tf*idf
+
+
+def recipe_fcc(adata, mito_names='MT-'):
+    '''
+    scanpy preprocessing recipe
+        adata = AnnData object with raw counts data in .X 
+        mito_names = substring encompassing mitochondrial gene names for calculation of mito expression
+
+    -calculates useful .obs and .var columns ('total_counts', 'pct_counts_mito', 'n_genes_by_counts', etc.)
+    -orders cells by total counts
+    -stores raw counts (adata.raw.X)
+    -provides GF-ICF normalization (adata.layers['gf-icf'])
+    -normalization and log1p transformation of counts (adata.X)
+    -identifies highly-variable genes using seurat method (adata.var['highly_variable'])
+    '''
+    reorder_adata(adata, descending=True) # reorder cells by total counts descending
+
+    # raw
+    adata.raw = adata # store raw counts before manipulation
+
+    # obs/var
+    adata.var['mito'] = adata.var_names.str.contains(mito_names) # identify mitochondrial genes
+    sc.pp.calculate_qc_metrics(adata, qc_vars=['mito'], inplace=True) # calculate standard qc .obs and .var
+
+    # gf-icf
+    gf_icf(adata) # add gf-icf scores to adata.layers['gf-icf']
+
+    # normalize/transform
+    sc.pp.normalize_total(adata, target_sum=10000, layers='all', layer_norm='after', key_added='norm_factor')
+    sc.pp.log1p(adata) # log1p transform counts
+    sc.pp.scale(adata, max_value=10) # scaling by variance and centering to zero for visualization
+
+    # HVGs
+    sc.pp.highly_variable_genes(adata, flavor='seurat', n_top_genes=2000)
+
+
+# machine learning evaluation functions
 def numerize(df, col, drop=True):
     '''
     make categorical data numeric from 0 - n categories
