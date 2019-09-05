@@ -21,7 +21,14 @@ def find_inflection(ann_data, inflection_percentiles = [0,15,30,100]):
     for percentile in percentile_points:
         plt.axvline(x=percentile,ymin=0,c=color[percentile],linestyle='--',linewidth=2,label="Inflection point {}".format(percentile))
     plt.legend()
+    #save to file
+    if(output_prefix!=''):
+        plt.savefig(output_prefix+'_inflectionCheck.png',bbox_inches='tight')
+    else:
+        plt.show()
     print("Inflection point at {} for {} percentiles of greatest secant distances".format(percentile_points,inflection_percentiles))
+    #SJCG: added the ability to return a dictionary of points
+    return(dict(zip(inflection_percentiles, percentile_points)))
     
 def reorder_AnnData(AnnData, descending = True):
     AnnData.obs['n_counts'] = AnnData.X.sum(axis=1)
