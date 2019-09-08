@@ -20,6 +20,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
 from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
+from xgboost import XGBClassifier
 # plotting tools
 import matplotlib.pyplot as plt
 import seaborn as sns; sns.set(style = 'white')
@@ -80,7 +81,7 @@ def cluster_summary_stats(AnnData,raw=False):
             cluster_means[cluster]=np.array(np.mean(AnnData[AnnData.obs['louvain'].isin([str(cluster)])].X,axis = 0))
             cluster_medians[cluster]=np.array(np.median(AnnData[AnnData.obs['louvain'].isin([str(cluster)])].X,axis = 0))
             cluster_stdev[cluster]=np.array(np.std(AnnData[AnnData.obs['louvain'].isin([str(cluster)])].X,axis = 0))
-    elif(raw == False):    
+    elif(raw == False):
         for cluster in range(len(np.unique(AnnData.obs['louvain']))):
             cluster_means[cluster]=np.array(np.mean(AnnData[AnnData.obs['louvain'].isin([str(cluster)])].raw.X,axis = 0))
             cluster_medians[cluster]=np.array(np.median(AnnData[AnnData.obs['louvain'].isin([str(cluster)])].raw.X,axis = 0))
@@ -140,7 +141,7 @@ def validator(splits, classifier):
 def plot_cm(cm):
     '''plot confusion matrix using seaborn for pretty output'''
     plt.figure(figsize=(3,3))
-    sns.heatmap(cm, annot=True, fmt='d', linewidths=.5, square = True, cmap = 'Blues_r', cbar=False, annot_kws={'fontsize':18})
+    sns.heatmap(cm, annot=True, fmt='.0f', linewidths=.5, square = True, cmap = 'Blues_r', cbar=False, annot_kws={'fontsize':18})
     plt.ylabel('Actual Label', fontsize=14)
     plt.xlabel('Predicted label', fontsize=14)
     plt.tick_params(axis='both', which='major', labelsize=14)
