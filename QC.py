@@ -4,7 +4,7 @@ import scanpy as sc
 import matplotlib.pylab as plt
 from scipy import stats
 
-def find_inflection(ann_data, inflection_percentiles = [0,15,30,100]):
+def find_inflection(ann_data, inflection_percentiles = [0,15,30,100],output_prefix='Output'):
     ann_data_cumsum = np.cumsum(ann_data.obs['n_counts'])
     x_vals=np.arange(0,ann_data.obs.shape[0])
     secant_coef=ann_data_cumsum[ann_data.obs.shape[0]-1]/ann_data.obs.shape[0]
