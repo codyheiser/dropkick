@@ -22,4 +22,7 @@ You will also need a sample-by-gene comma-delimited matrix. Genes are expected t
 [add instructions here]
 
 
-# This scRNA-seq quality control pipeline requires python 3, numpy, pandas, scipy, and scanpy installed.
+## This scRNA-seq quality control pipeline requires python 3, numpy, pandas, scipy, and scanpy installed.
+
+`conda install seaborn scikit-learn statsmodels numba pytables`
+`conda install -c conda-forge python-igraph louvain`
