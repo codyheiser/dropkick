@@ -13,8 +13,9 @@ import numbers
 import numpy as np
 from warnings import warn
 from abc import ABCMeta, abstractmethod
-from joblib import Parallel, delayed
 from six import with_metaclass
+
+from joblib import Parallel, delayed
 
 from sklearn.base import ClassifierMixin
 from sklearn.metrics import accuracy_score
@@ -568,8 +569,8 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         y : array of shape = [n_samples]
             The predicted classes.
         '''
-        predicted_probabilitiy = self.predict_proba(X)
-        return self.classes_.take((np.argmax(predicted_probabilitiy, axis=1)), axis=0)
+        predicted_probability = self.predict_proba(X)
+        return self.classes_.take((np.argmax(predicted_probability, axis=1)), axis=0)
 
 
     def predict_proba(self, X):
@@ -604,8 +605,10 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
 
         all_proba = Parallel(n_jobs=n_jobs, verbose=self.verbose)(
-            delayed(_parallel_predict_proba)(self.estimators_[starts[i]:starts[i + 1]],
-                self.estimators_features_[starts[i]:starts[i + 1]], X, self.n_classes_)
+            delayed(_parallel_predict_proba)(
+                self.estimators_[starts[i]:starts[i + 1]], 
+                self.estimators_features_[starts[i]:starts[i + 1]], 
+                X, self.n_classes_) 
             for i in range(n_jobs))
 
         # reduce
