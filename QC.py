@@ -54,8 +54,8 @@ def reorder_AnnData(AnnData, descending = True):
     AnnData.obs = AnnData.obs.iloc[new_order].copy()
 
 
-def find_inflection(ann_data, inflection_percentiles = [0,15,30,100]):
-    ann_data_cumsum = np.cumsum(ann_data.obs['total_counts'])
+def find_inflection(ann_data, inflection_percentiles = [0,15,30,100], obs_name = 'total_counts'):
+    ann_data_cumsum = np.cumsum(ann_data.obs[obs_name])
     x_vals=np.arange(0,ann_data.obs.shape[0])
     secant_coef=ann_data_cumsum[ann_data.obs.shape[0]-1]/ann_data.obs.shape[0]
     secant_line=secant_coef*x_vals
