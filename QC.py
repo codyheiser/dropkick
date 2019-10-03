@@ -33,12 +33,11 @@ def find_inflection(ann_data, inflection_percentiles = [0,15,30,100],output_pref
 def reorder_AnnData(AnnData, descending = True):
     AnnData.obs['n_counts'] = AnnData.X.sum(axis=1)
     if(descending==True):
-        new_order = np.argsort(AnnData.obs['n_counts'])[::-1]
+        AnnData = AnnData[np.argsort(AnnData.obs['n_counts'])[::-1]].copy()
     elif(descending==False):
-        new_order = np.argsort(AnnData.obs['n_counts'])[:]
-    AnnData.X = AnnData.X[new_order,:].copy()
-    AnnData.obs = AnnData.obs.iloc[new_order].copy()
-
+        AnnData = AnnData[np.argsort(AnnData.obs['n_counts'])[:]].copy()
+    return(AnnData)
+    
 def arcsinh_transform(AnnData, cofactor = 1000):
     AnnData.X = np.arcsinh(AnnData.X*cofactor,dtype='float')
 
