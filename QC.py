@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 '''
 Utility functions for scRNA-seq quality control classifiers
+
 @authors: B Chen, C Heiser
 '''
 # basic matrix/dataframe manipulation
@@ -17,10 +18,15 @@ from sklearn.multiclass import OneVsRestClassifier
 # load sklearn classifiers
 from sklearn.linear_model import LogisticRegressionCV
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
 from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
 from xgboost import XGBClassifier
+# PU bagging method adapted from sklearn
+from PU_bagging import BaggingClassifierPU
+# custom PU two-step method
+from PU_twostep import twoStep
 # plotting tools
 import matplotlib.pyplot as plt
 import seaborn as sns; sns.set(style = 'white')
@@ -48,8 +54,8 @@ def reorder_AnnData(AnnData, descending = True):
     AnnData.obs = AnnData.obs.iloc[new_order].copy()
 
 
-def find_inflection(ann_data, inflection_percentiles = [0,15,30,100]):
-    ann_data_cumsum = np.cumsum(ann_data.obs['total_counts'])
+def find_inflection(ann_data, inflection_percentiles = [0,15,30,100], obs_name = 'total_counts'):
+    ann_data_cumsum = np.cumsum(ann_data.obs[obs_name])
     x_vals=np.arange(0,ann_data.obs.shape[0])
     secant_coef=ann_data_cumsum[ann_data.obs.shape[0]-1]/ann_data.obs.shape[0]
     secant_line=secant_coef*x_vals
@@ -193,7 +199,7 @@ def roc_kfold(clf, X, y, k, seed=None):
         cm = cm + conf_matrix
 
         probas_ = clf.predict_proba(X[test])
-        # Compute ROC curve and area the curve
+        # compute ROC curve and area the curve
         fpr, tpr, _ = roc_curve(y[test], probas_[:, 1])
         tprs.append(interp(mean_fpr, fpr, tpr))
         tprs[-1][0] = 0.0
@@ -270,7 +276,7 @@ def multiclass_roc(clf, X_train, X_test, y_train, y_test, plot_out=True):
     roc_auc["macro"] = auc(fpr["macro"], tpr["macro"])
 
     if plot_out:
-        # Plot all ROC curves
+        # plot all ROC curves
         plt.figure()
         plt.plot([0, 1], [0, 1], 'k--', lw=3)
         plt.plot(fpr["micro"], tpr["micro"], label='micro-avg ROC (area = {0:0.2f})'.format(roc_auc["micro"]), color='deeppink', linestyle=':', linewidth=4)
