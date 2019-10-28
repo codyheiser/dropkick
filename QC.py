@@ -55,7 +55,7 @@ def reorder_AnnData(AnnData, descending = True):
 
 
 def find_inflection(ann_data, inflection_percentiles = [0,15,30,100],output_prefix='Output'):
-    ann_data_cumsum = np.cumsum(ann_data.obs['n_counts'])
+    ann_data_cumsum = np.cumsum(ann_data.obs['total_counts'])
     x_vals=np.arange(0,ann_data.obs.shape[0])
     secant_coef=ann_data_cumsum[ann_data.obs.shape[0]-1]/ann_data.obs.shape[0]
     secant_line=secant_coef*x_vals
@@ -79,17 +79,6 @@ def find_inflection(ann_data, inflection_percentiles = [0,15,30,100],output_pref
     print("Inflection point at {} for {} percentiles of greatest secant distances".format(percentile_points,inflection_percentiles))
     #SJCG: added the ability to return a dictionary of points
     return(dict(zip(inflection_percentiles, percentile_points)))
-    
-def reorder_AnnData(AnnData, descending = True):
-    AnnData.obs['n_counts'] = AnnData.X.sum(axis=1)
-    if(descending==True):
-        AnnData = AnnData[np.argsort(AnnData.obs['n_counts'])[::-1]].copy()
-    elif(descending==False):
-        AnnData = AnnData[np.argsort(AnnData.obs['n_counts'])[:]].copy()
-    return(AnnData)
-    
-def arcsinh_transform(AnnData, cofactor = 1000):
-    AnnData.X = np.arcsinh(AnnData.X*cofactor,dtype='float')
 
 
 def cluster_summary_stats(AnnData,raw=False):
