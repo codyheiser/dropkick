@@ -648,7 +648,7 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
 
             all_log_proba = Parallel(n_jobs=n_jobs, verbose=self.verbose)(
                 delayed(_parallel_predict_log_proba)(self.estimators_[starts[i]:starts[i + 1]],
-                    self.estimators_features_[starts[i]:starts[i + 1]], X, self.n_classes_)
+                    self.estimatorsbc2_features_[starts[i]:starts[i + 1]], X, self.n_classes_)
                 for i in range(n_jobs))
 
             # reduce
