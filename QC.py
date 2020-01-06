@@ -1,11 +1,152 @@
 import pandas as pd
 import numpy as np
 import scanpy as sc
-import matplotlib.pylab as plt
-from scipy import stats
+# sklearn tools
+from sklearn.preprocessing import normalize, label_binarize
+from sklearn.model_selection import KFold, StratifiedKFold, train_test_split
+from sklearn.metrics import roc_curve, auc, confusion_matrix
+from sklearn.multiclass import OneVsRestClassifier
+# load sklearn classifiers
+from sklearn.linear_model import LogisticRegressionCV
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from xgboost import XGBClassifier
+# PU bagging method adapted from sklearn
+from PU_bagging import BaggingClassifierPU
+# custom PU two-step method
+from PU_twostep import twoStep
+# plotting tools
+import matplotlib.pyplot as plt
+import seaborn as sns; sns.set(style = 'white')
 
-def find_inflection(ann_data, inflection_percentiles = [0,15,30,100],output_prefix='Output'):
-    ann_data_cumsum = np.cumsum(ann_data.obs['n_counts'])
+
+
+# scanpy functions
+def reorder_adata(adata, descending=True):
+    """
+    place cells in descending order of total counts
+    
+    Parameters:
+        adata (AnnData.AnnData): AnnData object
+        descending (bool): highest counts first
+
+    Returns:
+        AnnData.AnnData: adata cells are reordered in place
+    """
+    if descending:
+        new_order = np.argsort(adata.X.sum(axis=1))[::-1]
+    elif not descending:
+        new_order = np.argsort(adata.X.sum(axis=1))[:]
+    adata = adata[new_order, :].copy()
+
+
+def reorder_AnnData(AnnData, descending = True):
+    AnnData.obs['total_counts'] = AnnData.X.sum(axis=1)
+    if(descending==True):
+        new_order = np.argsort(AnnData.obs['total_counts'])[::-1]
+    elif(descending==False):
+        new_order = np.argsort(AnnData.obs['total_counts'])[:]
+    AnnData.X = AnnData.X[new_order,:].copy()
+    AnnData.obs = AnnData.obs.iloc[new_order].copy()
+
+
+def arcsinh_norm(adata, layer=None, norm="l1", scale=1e6):
+    """
+    return arcsinh-normalized values for each element in anndata counts matrix
+
+    Parameters:
+        adata (AnnData.AnnData): AnnData object
+        layer (str or None): name of layer to perform arcsinh-normalization on. if None, use AnnData.X
+        norm (str or None): normalization strategy following GF-ICF transform.
+            None: do not normalize counts
+            "l1": divide each count by sum of counts for each cell (analogous to sc.pp.normalize_total)
+            "l2": divide each count by sqrt of sum of squares of counts for each cell
+        scale (int): factor to scale normalized counts to; default 1e6 for TPM
+
+    Returns:
+        AnnData.AnnData: adata is edited in place to add arcsinh normalization to .layers
+    """
+    if layer is None:
+        mat = adata.X
+    else:
+        mat = adata.layers[layer]
+
+    if norm is None:
+        adata.layers["arcsinh_norm"] = np.arcsinh(mat * scale)
+    else:
+        adata.layers["arcsinh_norm"] = np.arcsinh(
+            normalize(mat, axis=1, norm=norm) * scale
+        )
+
+
+def recipe_fcc(
+    adata, X_final="raw_counts", mito_names="MT-", target_sum=1e6, n_hvgs=2000
+):
+    """
+    scanpy preprocessing recipe
+
+    Parameters:
+        adata (AnnData.AnnData): object with raw counts data in .X
+        X_final (str): which normalization should be left in .X slot?
+            ("raw_counts","log1p_norm","arcsinh_norm")
+        mito_names (str): substring encompassing mitochondrial gene names for
+            calculation of mito expression
+        target_sum (int): total sum of counts for each cell prior to arcsinh 
+            and log1p transformations; default 1e6 for TPM
+        n_hvgs (int): number of HVGs to calculate using Seurat method
+
+    Returns:
+        AnnData.AnnData: adata is edited in place to include:
+        - useful .obs and .var columns
+            ("total_counts", "pct_counts_mito", "n_genes_by_counts", etc.)
+        - cells ordered by "total_counts"
+        - raw counts (adata.layers["raw_counts"])
+        - arcsinh transformation of normalized counts
+            (adata.layers["arcsinh_norm"])
+        - log1p transformation of normalized counts
+            (adata.X, adata.layers["log1p_norm"])
+        - highly variable genes (adata.var["highly_variable"])
+    """
+    # reorder cells by total counts descending
+    reorder_adata(adata, descending=True)
+
+    # store raw counts before manipulation
+    adata.layers["raw_counts"] = adata.X.copy()
+
+    # identify mitochondrial genes
+    adata.var["mito"] = adata.var_names.str.contains(mito_names)
+    # calculate standard qc .obs and .var
+    sc.pp.calculate_qc_metrics(adata, qc_vars=["mito"], inplace=True)
+    # rank cells by total counts
+    adata.obs["ranked_total_counts"] = np.argsort(adata.obs["total_counts"])
+
+    # arcsinh transform (adata.layers["arcsinh_norm"]) and add total for visualization
+    arcsinh_norm(adata, norm="l1", scale=target_sum)
+    adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
+
+    # log1p transform (adata.layers["log1p_norm"])
+    sc.pp.normalize_total(
+        adata,
+        target_sum=target_sum,
+        layers=None,
+        layer_norm=None,
+        key_added="TPM_norm_factor",
+    )
+    sc.pp.log1p(adata)
+    adata.layers["log1p_norm"] = adata.X.copy()  # save to .layers
+
+    # HVGs
+    sc.pp.highly_variable_genes(adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat")
+
+    # set .X as desired for downstream processing; default raw_counts
+    adata.X = adata.layers[X_final].copy()
+
+
+def find_inflection(ann_data, inflection_percentiles = [0,15,30,100], output_prefix='Output'):
+    ann_data_cumsum = np.cumsum(ann_data.obs['total_counts'])
     x_vals=np.arange(0,ann_data.obs.shape[0])
     secant_coef=ann_data_cumsum[ann_data.obs.shape[0]-1]/ann_data.obs.shape[0]
     secant_line=secant_coef*x_vals
