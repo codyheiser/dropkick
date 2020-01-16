@@ -53,7 +53,7 @@ def reorder_AnnData(AnnData, descending = True):
     AnnData.obs = AnnData.obs.iloc[new_order].copy()
 
 
-def arcsinh_norm(adata, layer=None, norm="l1", scale=1e6):
+def arcsinh_norm(adata, layer=None, norm="l1", scale=None):
     """
     return arcsinh-normalized values for each element in anndata counts matrix
 
@@ -64,7 +64,7 @@ def arcsinh_norm(adata, layer=None, norm="l1", scale=1e6):
             None: do not normalize counts
             "l1": divide each count by sum of counts for each cell (analogous to sc.pp.normalize_total)
             "l2": divide each count by sqrt of sum of squares of counts for each cell
-        scale (int): factor to scale normalized counts to; default 1e6 for TPM
+        scale (int): factor to scale normalized counts to; if None, median total counts across all cells
 
     Returns:
         AnnData.AnnData: adata is edited in place to add arcsinh normalization to .layers
@@ -74,6 +74,9 @@ def arcsinh_norm(adata, layer=None, norm="l1", scale=1e6):
     else:
         mat = adata.layers[layer]
 
+    if scale is None:
+        scale = np.median(mat.sum(axis=1))
+
     if norm is None:
         adata.layers["arcsinh_norm"] = np.arcsinh(mat * scale)
     else:
@@ -82,8 +85,57 @@ def arcsinh_norm(adata, layer=None, norm="l1", scale=1e6):
         )
 
 
+def gf_icf(adata, layer=None, transform="arcsinh", norm=None):
+    """
+    return GF-ICF scores for each element in anndata counts matrix
+
+    Parameters:
+        adata (AnnData.AnnData): AnnData object
+        layer (str or None): name of layer to perform GF-ICF normalization on. if None, use AnnData.X
+        transform (str): how to transform ICF weights. arcsinh is recommended to retain counts of genes
+            expressed in all cells. log transform eliminates these genes from the dataset.
+        norm (str or None): normalization strategy following GF-ICF transform.
+            None: do not normalize GF-ICF scores
+            "l1": divide each score by sum of scores for each cell (analogous to sc.pp.normalize_total)
+            "l2": divide each score by sqrt of sum of squares of scores for each cell
+
+    Returns:
+        AnnData.AnnData: adata is edited in place to add GF-ICF normalization to .layers["gf_icf"]
+    """
+    if layer is None:
+        m = adata.X
+    else:
+        m = adata.layers[layer]
+
+    # number of cells containing each gene (sum nonzero along columns)
+    nt = m.astype(bool).sum(axis=0)
+    assert np.all(
+        nt
+    ), "Encountered {} genes with 0 cells by counts. Remove these before proceeding (i.e. sc.pp.filter_genes(adata,min_cells=1))".format(
+        np.size(nt) - np.count_nonzero(nt)
+    )
+    # gene frequency in each cell (l1 norm along rows)
+    tf = m / m.sum(axis=1)[:, None]
+
+    # inverse cell frequency (total cells / number of cells containing each gene)
+    if transform == "arcsinh":
+        idf = np.arcsinh(adata.n_obs / nt)
+    elif transform == "log":
+        idf = np.log(adata.n_obs / nt)
+    else:
+        raise ValueError("Please provide a valid transform (log or arcsinh).")
+
+    # save GF-ICF scores to .layers and total GF-ICF per cell in .obs
+    tf_idf = tf * idf
+    adata.obs["gf_icf_total"] = tf_idf.sum(axis=1)
+    if norm is None:
+        adata.layers["gf_icf"] = tf_idf
+    else:
+        adata.layers["gf_icf"] = normalize(tf_idf, norm=norm, axis=1)
+
+
 def recipe_fcc(
-    adata, X_final="raw_counts", mito_names="MT-", target_sum=1e6, n_hvgs=2000
+    adata, X_final="raw_counts", mito_names="MT-", target_sum=None, n_hvgs=2000
 ):
     """
     scanpy preprocessing recipe
@@ -91,7 +143,7 @@ def recipe_fcc(
     Parameters:
         adata (AnnData.AnnData): object with raw counts data in .X
         X_final (str): which normalization should be left in .X slot?
-            ("raw_counts","log1p_norm","arcsinh_norm")
+            ("raw_counts","gf_icf","log1p_norm","arcsinh_norm")
         mito_names (str): substring encompassing mitochondrial gene names for
             calculation of mito expression
         target_sum (int): total sum of counts for each cell prior to arcsinh 
@@ -104,6 +156,7 @@ def recipe_fcc(
             ("total_counts", "pct_counts_mito", "n_genes_by_counts", etc.)
         - cells ordered by "total_counts"
         - raw counts (adata.layers["raw_counts"])
+        - GF-ICF transformation of counts (adata.layers["gf_icf"])
         - arcsinh transformation of normalized counts
             (adata.layers["arcsinh_norm"])
         - log1p transformation of normalized counts
@@ -127,13 +180,16 @@ def recipe_fcc(
     arcsinh_norm(adata, norm="l1", scale=target_sum)
     adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
 
+    # GF-ICF transform (adata.layers["gf_icf"], adata.obs["gf_icf_total"])
+    gf_icf(adata)
+
     # log1p transform (adata.layers["log1p_norm"])
     sc.pp.normalize_total(
         adata,
         target_sum=target_sum,
         layers=None,
         layer_norm=None,
-        key_added="TPM_norm_factor",
+        key_added="log1p_norm_factor",
     )
     sc.pp.log1p(adata)
     adata.layers["log1p_norm"] = adata.X.copy()  # save to .layers
