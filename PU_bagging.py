@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
-'''
+"""
 Bagging meta-estimator for positive-unlabeled (PU) learning.
 
 @author: Gilles Louppe <g.louppe@gmail.com>
 License: BSD 3 clause
 Adapted for PU learning by Roy Wright <roy.w.wright@gmail.com> in https://github.com/roywright/pu_learning
-'''
-from __future__ import division
-
+"""
 import itertools
 import numbers
 import numpy as np
@@ -32,41 +30,53 @@ MAX_INT = np.iinfo(np.int32).max
 
 
 def _generate_indices(random_state, bootstrap, n_population, n_samples):
-    '''Draw randomly sampled indices'''
+    """Draw randomly sampled indices"""
     # draw sample indices
     if bootstrap:
         indices = random_state.randint(0, n_population, n_samples)
     else:
-        indices = sample_without_replacement(n_population, n_samples,
-                                             random_state=random_state)
+        indices = sample_without_replacement(
+            n_population, n_samples, random_state=random_state
+        )
 
     return indices
 
 
-def _generate_bagging_indices(random_state, bootstrap_features, bootstrap_samples, n_features, n_samples, max_features, max_samples):
-    '''Randomly draw feature and sample indices'''
+def _generate_bagging_indices(
+    random_state,
+    bootstrap_features,
+    bootstrap_samples,
+    n_features,
+    n_samples,
+    max_features,
+    max_samples,
+):
+    """Randomly draw feature and sample indices"""
     # get valid random state
     random_state = check_random_state(random_state)
 
     # draw indices
-    feature_indices = _generate_indices(random_state, bootstrap_features,
-                                        n_features, max_features)
-    sample_indices = _generate_indices(random_state, bootstrap_samples,
-                                       n_samples, max_samples)
+    feature_indices = _generate_indices(
+        random_state, bootstrap_features, n_features, max_features
+    )
+    sample_indices = _generate_indices(
+        random_state, bootstrap_samples, n_samples, max_samples
+    )
 
     return feature_indices, sample_indices
 
 
-def _parallel_build_estimators(n_estimators, ensemble, X, y, sample_weight,
-                               seeds, total_n_estimators, verbose):
-    '''Private function used to build a batch of estimators within a job'''
+def _parallel_build_estimators(
+    n_estimators, ensemble, X, y, sample_weight, seeds, total_n_estimators, verbose
+):
+    """Private function used to build a batch of estimators within a job"""
     # retrieve settings
     n_samples, n_features = X.shape
     max_features = ensemble._max_features
     max_samples = ensemble._max_samples
     bootstrap = ensemble.bootstrap
     bootstrap_features = ensemble.bootstrap_features
-    support_sample_weight = has_fit_parameter(ensemble.base_estimator_, 'sample_weight')
+    support_sample_weight = has_fit_parameter(ensemble.base_estimator_, "sample_weight")
     if not support_sample_weight and sample_weight is not None:
         raise ValueError("The base estimator doesn't support sample weight")
 
@@ -76,16 +86,26 @@ def _parallel_build_estimators(n_estimators, ensemble, X, y, sample_weight,
 
     for i in range(n_estimators):
         if verbose > 1:
-            print('Building estimator %d of %d for this parallel run '
-                  '(total %d)...' % (i + 1, n_estimators, total_n_estimators))
+            print(
+                "Building estimator %d of %d for this parallel run "
+                "(total %d)..." % (i + 1, n_estimators, total_n_estimators)
+            )
 
         random_state = np.random.RandomState(seeds[i])
         estimator = ensemble._make_estimator(append=False, random_state=random_state)
 
         # update for positive-unlabeled (PU) learning
         iP = [pair[0] for pair in enumerate(y) if pair[1] == 1]
-        iU = [pair[0] for pair in enumerate(y) if pair[1] < 1]            
-        features, indices = _generate_bagging_indices(random_state, bootstrap_features, bootstrap, n_features, len(iU), max_features, max_samples)
+        iU = [pair[0] for pair in enumerate(y) if pair[1] < 1]
+        features, indices = _generate_bagging_indices(
+            random_state,
+            bootstrap_features,
+            bootstrap,
+            n_features,
+            len(iU),
+            max_features,
+            max_samples,
+        )
         indices = [iU[i] for i in indices] + iP
 
         # draw samples, using sample weights, and then fit
@@ -115,20 +135,21 @@ def _parallel_build_estimators(n_estimators, ensemble, X, y, sample_weight,
 
 
 def _parallel_predict_proba(estimators, estimators_features, X, n_classes):
-    '''Private function used to compute (proba-)predictions within a job'''
+    """Private function used to compute (proba-)predictions within a job"""
     n_samples = X.shape[0]
     proba = np.zeros((n_samples, n_classes))
 
     for estimator, features in zip(estimators, estimators_features):
-        if hasattr(estimator, 'predict_proba'):
+        if hasattr(estimator, "predict_proba"):
             proba_estimator = estimator.predict_proba(X[:, features])
 
             if n_classes == len(estimator.classes_):
                 proba += proba_estimator
 
             else:
-                proba[:, estimator.classes_] += \
-                    proba_estimator[:, range(len(estimator.classes_))]
+                proba[:, estimator.classes_] += proba_estimator[
+                    :, range(len(estimator.classes_))
+                ]
 
         else:
             # resort to voting
@@ -141,7 +162,7 @@ def _parallel_predict_proba(estimators, estimators_features, X, n_classes):
 
 
 def _parallel_predict_log_proba(estimators, estimators_features, X, n_classes):
-    '''Private function used to compute log probabilities within a job'''
+    """Private function used to compute log probabilities within a job"""
     n_samples = X.shape[0]
     log_proba = np.empty((n_samples, n_classes))
     log_proba.fill(-np.inf)
@@ -156,44 +177,48 @@ def _parallel_predict_log_proba(estimators, estimators_features, X, n_classes):
         else:
             log_proba[:, estimator.classes_] = np.logaddexp(
                 log_proba[:, estimator.classes_],
-                log_proba_estimator[:, range(len(estimator.classes_))])
+                log_proba_estimator[:, range(len(estimator.classes_))],
+            )
 
             missing = np.setdiff1d(all_classes, estimator.classes_)
-            log_proba[:, missing] = np.logaddexp(log_proba[:, missing],
-                                                 -np.inf)
+            log_proba[:, missing] = np.logaddexp(log_proba[:, missing], -np.inf)
 
     return log_proba
 
 
 def _parallel_decision_function(estimators, estimators_features, X):
-    '''Private function used to compute decisions within a job'''
-    return sum(estimator.decision_function(X[:, features])
-               for estimator, features in zip(estimators, estimators_features))
-
+    """Private function used to compute decisions within a job"""
+    return sum(
+        estimator.decision_function(X[:, features])
+        for estimator, features in zip(estimators, estimators_features)
+    )
 
 
 class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
-    '''
+    """
     Base class for Bagging PU meta-estimator
 
     Warning: This class should not be used directly. Use derived classes instead.
-    '''
+    """
+
     @abstractmethod
-    def __init__(self,
-                 base_estimator=None,
-                 n_estimators=10,
-                 max_samples=1.0,
-                 max_features=1.0,
-                 bootstrap=True,
-                 bootstrap_features=False,
-                 oob_score=True,
-                 warm_start=False,
-                 n_jobs=1,
-                 random_state=None,
-                 verbose=0):
+    def __init__(
+        self,
+        base_estimator=None,
+        n_estimators=10,
+        max_samples=1.0,
+        max_features=1.0,
+        bootstrap=True,
+        bootstrap_features=False,
+        oob_score=True,
+        warm_start=False,
+        n_jobs=1,
+        random_state=None,
+        verbose=0,
+    ):
         super(BaseBaggingPU, self).__init__(
-            base_estimator=base_estimator,
-            n_estimators=n_estimators)
+            base_estimator=base_estimator, n_estimators=n_estimators
+        )
 
         self.max_samples = max_samples
         self.max_features = max_features
@@ -205,9 +230,8 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
         self.random_state = random_state
         self.verbose = verbose
 
-
     def fit(self, X, y, sample_weight=None):
-        '''
+        """
         Build a Bagging ensemble of estimators from the training set (X, y)
 
         X : {array-like, sparse matrix} of shape = [n_samples, n_features]
@@ -221,12 +245,11 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
             Sample weights. If None, then samples are equally weighted.
             Note that this is supported only if the base estimator supports
             sample weighting.
-        '''
+        """
         return self._fit(X, y, self.max_samples, sample_weight=sample_weight)
 
-
     def _fit(self, X, y, max_samples=None, max_depth=None, sample_weight=None):
-        '''
+        """
         Build a Bagging ensemble of estimators from the training set (X, y).
 
         X : {array-like, sparse matrix} of shape = [n_samples, n_features]
@@ -247,13 +270,13 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
             Sample weights. If None, then samples are equally weighted.
             Note that this is supported only if the base estimator supports
             sample weighting.
-        '''
+        """
         random_state = check_random_state(self.random_state)
 
         self.y = y
-        
+
         # convert data
-        X, y = check_X_y(X, y, ['csr', 'csc'])
+        X, y = check_X_y(X, y, ["csr", "csc"])
         if sample_weight is not None:
             sample_weight = check_array(sample_weight, ensure_2d=False)
             check_consistent_length(y, sample_weight)
@@ -276,7 +299,9 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
             max_samples = int(max_samples * sum(y < 1))
 
         if not (0 < max_samples <= sum(y < 1)):
-            raise ValueError('max_samples must be positive and no larger than the number of unlabeled points')
+            raise ValueError(
+                "max_samples must be positive and no larger than the number of unlabeled points"
+            )
 
         # store validated integer row sampling value
         self._max_samples = max_samples
@@ -288,22 +313,22 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
             max_features = int(self.max_features * self.n_features_)
 
         if not (0 < max_features <= self.n_features_):
-            raise ValueError('max_features must be in (0, n_features]')
+            raise ValueError("max_features must be in (0, n_features]")
 
         # store validated integer feature sampling value
         self._max_features = max_features
 
         # other checks
         if not self.bootstrap and self.oob_score:
-            raise ValueError('Out of bag estimation only available if bootstrap=True')
+            raise ValueError("Out of bag estimation only available if bootstrap=True")
 
         if self.warm_start and self.oob_score:
-            raise ValueError('Out of bag estimate only available if warm_start=False')
+            raise ValueError("Out of bag estimate only available if warm_start=False")
 
-        if hasattr(self, 'oob_score_') and self.warm_start:
+        if hasattr(self, "oob_score_") and self.warm_start:
             del self.oob_score_
 
-        if not self.warm_start or not hasattr(self, 'estimators_'):
+        if not self.warm_start or not hasattr(self, "estimators_"):
             # free allocated memory, if any
             self.estimators_ = []
             self.estimators_features_ = []
@@ -311,17 +336,22 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
         n_more_estimators = self.n_estimators - len(self.estimators_)
 
         if n_more_estimators < 0:
-            raise ValueError('n_estimators=%d must be larger or equal to '
-                             'len(estimators_)=%d when warm_start==True'
-                             % (self.n_estimators, len(self.estimators_)))
+            raise ValueError(
+                "n_estimators=%d must be larger or equal to "
+                "len(estimators_)=%d when warm_start==True"
+                % (self.n_estimators, len(self.estimators_))
+            )
 
         elif n_more_estimators == 0:
-            warn('Warm-start fitting without increasing n_estimators does not fit new trees.')
+            warn(
+                "Warm-start fitting without increasing n_estimators does not fit new trees."
+            )
             return self
 
         # parallel loop
-        n_jobs, n_estimators, starts = _partition_estimators(n_more_estimators,
-                                                             self.n_jobs)
+        n_jobs, n_estimators, starts = _partition_estimators(
+            n_more_estimators, self.n_jobs
+        )
         total_n_estimators = sum(n_estimators)
 
         # advance random state to state after training the first n_estimators
@@ -338,46 +368,57 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
                 X,
                 y,
                 sample_weight,
-                seeds[starts[i]:starts[i + 1]],
+                seeds[starts[i] : starts[i + 1]],
                 total_n_estimators,
-                verbose=self.verbose)
-            for i in range(n_jobs))
+                verbose=self.verbose,
+            )
+            for i in range(n_jobs)
+        )
 
         # reduce
-        self.estimators_ += list(itertools.chain.from_iterable(t[0] for t in all_results))
-        self.estimators_features_ += list(itertools.chain.from_iterable(t[1] for t in all_results))
+        self.estimators_ += list(
+            itertools.chain.from_iterable(t[0] for t in all_results)
+        )
+        self.estimators_features_ += list(
+            itertools.chain.from_iterable(t[1] for t in all_results)
+        )
 
         if self.oob_score:
             self._set_oob_score(X, y)
 
         return self
 
-
     def _validate_y(self, y):
         # default implementation
         return column_or_1d(y, warn=True)
-
 
     def _get_estimators_indices(self):
         # get drawn indices along both sample and feature axes
         for seed in self._seeds:
             # operations accessing random_state must be performed identically to those in `_parallel_build_estimators()`
             random_state = np.random.RandomState(seed)
-            
+
             # update for positive-unlabeled (PU) learning
             iP = [pair[0] for pair in enumerate(self.y) if pair[1] == 1]
-            iU = [pair[0] for pair in enumerate(self.y) if pair[1] < 1] 
-            
-            feature_indices, sample_indices = _generate_bagging_indices(random_state, self.bootstrap_features, self.bootstrap, self.n_features_, len(iU), self._max_features, self._max_samples)
+            iU = [pair[0] for pair in enumerate(self.y) if pair[1] < 1]
+
+            feature_indices, sample_indices = _generate_bagging_indices(
+                random_state,
+                self.bootstrap_features,
+                self.bootstrap,
+                self.n_features_,
+                len(iU),
+                self._max_features,
+                self._max_samples,
+            )
 
             sample_indices = [iU[i] for i in sample_indices] + iP
-            
-            yield feature_indices, sample_indices
 
+            yield feature_indices, sample_indices
 
     @property
     def estimators_samples_(self):
-        '''
+        """
         The subset of drawn samples for each base estimator.
 
         Returns a dynamically generated list of boolean masks identifying
@@ -387,7 +428,7 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
         Note: the list is re-created at each call to the property in order
         to reduce the object memory footprint by not storing the sampling
         data. Thus fetching the property may be slower than expected.
-        '''
+        """
         sample_masks = []
         for _, sample_indices in self._get_estimators_indices():
             mask = indices_to_mask(sample_indices, self._n_samples)
@@ -396,9 +437,8 @@ class BaseBaggingPU(with_metaclass(ABCMeta, BaseEnsemble)):
         return sample_masks
 
 
-
 class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
-    '''
+    """
     A Bagging PU classifier
 
     Adapted from sklearn.ensemble.BaggingClassifier, based on
@@ -477,19 +517,22 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         set. Positive data points, and perhaps some of the unlabeled,
         are left out during the bootstrap. In these cases,
         `oob_decision_function_` contains NaN.
-    '''
-    def __init__(self,
-                 base_estimator=None,
-                 n_estimators=10,
-                 max_samples=1.0,
-                 max_features=1.0,
-                 bootstrap=True,
-                 bootstrap_features=False,
-                 oob_score=True,
-                 warm_start=False,
-                 n_jobs=1,
-                 random_state=None,
-                 verbose=0):
+    """
+
+    def __init__(
+        self,
+        base_estimator=None,
+        n_estimators=10,
+        max_samples=1.0,
+        max_features=1.0,
+        bootstrap=True,
+        bootstrap_features=False,
+        oob_score=True,
+        warm_start=False,
+        n_jobs=1,
+        random_state=None,
+        verbose=0,
+    ):
 
         super(BaggingClassifierPU, self).__init__(
             base_estimator,
@@ -502,14 +545,14 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
             warm_start=warm_start,
             n_jobs=n_jobs,
             random_state=random_state,
-            verbose=verbose)
-
+            verbose=verbose,
+        )
 
     def _validate_estimator(self):
-        '''Check the estimator and set the base_estimator_ attribute'''
+        """Check the estimator and set the base_estimator_ attribute"""
         super(BaggingClassifierPU, self)._validate_estimator(
-            default=DecisionTreeClassifier())
-
+            default=DecisionTreeClassifier()
+        )
 
     def _set_oob_score(self, X, y):
         n_samples = y.shape[0]
@@ -517,12 +560,16 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
 
         predictions = np.zeros((n_samples, n_classes_))
 
-        for estimator, samples, features in zip(self.estimators_, self.estimators_samples_, self.estimators_features_):
+        for estimator, samples, features in zip(
+            self.estimators_, self.estimators_samples_, self.estimators_features_
+        ):
             # create mask for OOB samples
             mask = ~samples
 
-            if hasattr(estimator, 'predict_proba'):
-                predictions[mask, :] += estimator.predict_proba((X[mask, :])[:, features])
+            if hasattr(estimator, "predict_proba"):
+                predictions[mask, :] += estimator.predict_proba(
+                    (X[mask, :])[:, features]
+                )
 
             else:
                 p = estimator.predict((X[mask, :])[:, features])
@@ -532,16 +579,14 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
                     if mask[i]:
                         predictions[i, p[j]] += 1
                         j += 1
-           
+
         # no warnings about non-OOB points (i.e. positives)
-        with np.errstate(invalid='ignore'):  
-            oob_decision_function = (predictions /
-                                     predictions.sum(axis=1)[:, np.newaxis])
+        with np.errstate(invalid="ignore"):
+            oob_decision_function = predictions / predictions.sum(axis=1)[:, np.newaxis]
             oob_score = accuracy_score(y, np.argmax(predictions, axis=1))
 
         self.oob_decision_function_ = oob_decision_function
         self.oob_score_ = oob_score
-
 
     def _validate_y(self, y):
         y = column_or_1d(y, warn=True)
@@ -551,9 +596,8 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
 
         return y
 
-
     def predict(self, X):
-        '''
+        """
         Predict class for X
 
         The predicted class of an input sample is computed as the class with
@@ -568,13 +612,12 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         -------
         y : array of shape = [n_samples]
             The predicted classes.
-        '''
+        """
         predicted_probability = self.predict_proba(X)
         return self.classes_.take((np.argmax(predicted_probability, axis=1)), axis=0)
 
-
     def predict_proba(self, X):
-        '''
+        """
         Predict class probabilities for X.'
 
         The predicted class probabilities of an input sample is computed as
@@ -593,32 +636,38 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         p : array of shape = [n_samples, n_classes]
             The class probabilities of the input samples. The order of the
             classes corresponds to that in the attribute `classes_`.
-        '''
-        check_is_fitted(self, 'classes_')
+        """
+        check_is_fitted(self, "classes_")
         # check data
-        X = check_array(X, accept_sparse=['csr', 'csc'])
+        X = check_array(X, accept_sparse=["csr", "csc"])
 
         if self.n_features_ != X.shape[1]:
-            raise ValueError('Number of features of the model must match the input. Model n_features is {0} and input n_features is {1}.'.format(self.n_features_, X.shape[1]))
+            raise ValueError(
+                "Number of features of the model must match the input. Model n_features is {0} and input n_features is {1}.".format(
+                    self.n_features_, X.shape[1]
+                )
+            )
 
         # parallel loop
         n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
 
         all_proba = Parallel(n_jobs=n_jobs, verbose=self.verbose)(
             delayed(_parallel_predict_proba)(
-                self.estimators_[starts[i]:starts[i + 1]], 
-                self.estimators_features_[starts[i]:starts[i + 1]], 
-                X, self.n_classes_) 
-            for i in range(n_jobs))
+                self.estimators_[starts[i] : starts[i + 1]],
+                self.estimators_features_[starts[i] : starts[i + 1]],
+                X,
+                self.n_classes_,
+            )
+            for i in range(n_jobs)
+        )
 
         # reduce
         proba = sum(all_proba) / self.n_estimators
 
         return proba
 
-
     def predict_log_proba(self, X):
-        '''
+        """
         Predict class log-probabilities for X
 
         The predicted class log-probabilities of an input sample is computed as
@@ -634,22 +683,31 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         p : array of shape = [n_samples, n_classes]
             The class log-probabilities of the input samples. The order of the
             classes corresponds to that in the attribute `classes_`.
-        '''
-        check_is_fitted(self, 'classes_')
-        if hasattr(self.base_estimator_, 'predict_log_proba'):
+        """
+        check_is_fitted(self, "classes_")
+        if hasattr(self.base_estimator_, "predict_log_proba"):
             # check data
-            X = check_array(X, accept_sparse=['csr', 'csc'])
+            X = check_array(X, accept_sparse=["csr", "csc"])
 
             if self.n_features_ != X.shape[1]:
-                raise ValueError('Number of features of the model must match the input. Model n_features is {0} and input n_features is {1}'.format(self.n_features_, X.shape[1]))
+                raise ValueError(
+                    "Number of features of the model must match the input. Model n_features is {0} and input n_features is {1}".format(
+                        self.n_features_, X.shape[1]
+                    )
+                )
 
             # parallel loop
             n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
 
             all_log_proba = Parallel(n_jobs=n_jobs, verbose=self.verbose)(
-                delayed(_parallel_predict_log_proba)(self.estimators_[starts[i]:starts[i + 1]],
-                    self.estimators_features_[starts[i]:starts[i + 1]], X, self.n_classes_)
-                for i in range(n_jobs))
+                delayed(_parallel_predict_log_proba)(
+                    self.estimators_[starts[i] : starts[i + 1]],
+                    self.estimators_features_[starts[i] : starts[i + 1]],
+                    X,
+                    self.n_classes_,
+                )
+                for i in range(n_jobs)
+            )
 
             # reduce
             log_proba = all_log_proba[0]
@@ -664,10 +722,9 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
         else:
             return np.log(self.predict_proba(X))
 
-
-    @if_delegate_has_method(delegate='base_estimator')
+    @if_delegate_has_method(delegate="base_estimator")
     def decision_function(self, X):
-        '''
+        """
         Average of the decision functions of the base classifiers
 
         X : {array-like, sparse matrix} of shape = [n_samples, n_features]
@@ -681,24 +738,32 @@ class BaggingClassifierPU(BaseBaggingPU, ClassifierMixin):
             to the classes in sorted order, as they appear in the attribute
             ``classes_``. Regression and binary classification are special
             cases with ``k == 1``, otherwise ``k==n_classes``.
-        '''
-        check_is_fitted(self, 'classes_')
+        """
+        check_is_fitted(self, "classes_")
 
         # check data
-        X = check_array(X, accept_sparse=['csr', 'csc'])
+        X = check_array(X, accept_sparse=["csr", "csc"])
 
         if self.n_features_ != X.shape[1]:
-            raise ValueError('Number of features of the model must match the input. Model n_features is {0} and input n_features is {1}'.format(self.n_features_, X.shape[1]))
+            raise ValueError(
+                "Number of features of the model must match the input. Model n_features is {0} and input n_features is {1}".format(
+                    self.n_features_, X.shape[1]
+                )
+            )
 
         # parallel loop
         n_jobs, _, starts = _partition_estimators(self.n_estimators, self.n_jobs)
 
         all_decisions = Parallel(n_jobs=n_jobs, verbose=self.verbose)(
-            delayed(_parallel_decision_function)(self.estimators_[starts[i]:starts[i + 1]],
-                self.estimators_features_[starts[i]:starts[i + 1]], X)
-            for i in range(n_jobs))
+            delayed(_parallel_decision_function)(
+                self.estimators_[starts[i] : starts[i + 1]],
+                self.estimators_features_[starts[i] : starts[i + 1]],
+                X,
+            )
+            for i in range(n_jobs)
+        )
 
         # reduce
-        decisions = sum(all_decisions)/self.n_estimators
+        decisions = sum(all_decisions) / self.n_estimators
 
         return decisions
