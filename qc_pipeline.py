@@ -25,7 +25,7 @@ def auto_thresh_obs(
 
     Parameters:
         adata (anndata.AnnData): object containing unfiltered scRNA-seq data
-        obs_cols (list): name of column(s) to threshold from adata.obs
+        obs_cols (list of str): name of column(s) to threshold from adata.obs
         method (str): one of 'otsu' (default), 'li', or 'mean'
 
     Returns:
@@ -69,6 +69,66 @@ def plot_thresh_obs(adata, thresholds, bins=40):
         axes[i].set_title(list(thresholds.keys())[i])
     fig.tight_layout()
     plt.show()
+
+
+def filter_thresh_obs(
+    adata,
+    thresholds,
+    obs_cols=[
+        "arcsinh_total_counts",
+        "arcsinh_n_genes_by_counts",
+        "gf_icf_total",
+        "pct_counts_mito",
+        "pct_counts_in_top_50_genes",
+    ],
+    directions=["above", "above", "above", "below", "below",],
+    inclusive=True,
+    name="thresh_filter",
+):
+    """
+    filter cells by thresholding on metrics in adata.obs as output by auto_thresh_obs()
+
+    Parameters:
+        adata (anndata.AnnData): object containing unfiltered scRNA-seq data
+        thresholds (dict): output of auto_thresh_obs() function
+        obs_cols (list of str): name of column(s) to threshold from adata.obs
+        directions (list of str): 'below' or 'above', indicating which direction to keep (label=1)
+        inclusive (bool): include cells at the thresholds? default True.
+        name (str): name of .obs col containing final labels
+
+    Returns:
+        updated adata with filter labels in adata.obs[name]
+    """
+    # initialize .obs column as all "good" cells
+    adata.obs[name] = 1
+    # if any criteria are NOT met, label cells "bad"
+    for i in range(len(obs_cols)):
+        if directions[i] == "above":
+            if inclusive:
+                adata.obs.loc[
+                    (adata.obs[name] == 1)
+                    & (adata.obs[obs_cols[i]] <= thresholds[obs_cols[i]]),
+                    name,
+                ] = 0
+            else:
+                adata.obs.loc[
+                    (adata.obs[name] == 1)
+                    & (adata.obs[obs_cols[i]] < thresholds[obs_cols[i]]),
+                    name,
+                ] = 0
+        elif directions[i] == "below":
+            if inclusive:
+                adata.obs.loc[
+                    (adata.obs[name] == 1)
+                    & (adata.obs[obs_cols[i]] >= thresholds[obs_cols[i]]),
+                    name,
+                ] = 0
+            else:
+                adata.obs.loc[
+                    (adata.obs[name] == 1)
+                    & (adata.obs[obs_cols[i]] > thresholds[obs_cols[i]]),
+                    name,
+                ] = 0
 
 
 def sampling_probabilities(
