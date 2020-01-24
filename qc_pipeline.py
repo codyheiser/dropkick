@@ -6,7 +6,10 @@ Automated QC classifier pipeline
 """
 import numpy as np
 import matplotlib.pyplot as plt
+import scanpy as sc
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
+from sklearn.linear_model import RidgeClassifierCV
+from QC import reorder_adata, arcsinh_norm, gf_icf, recipe_fcc
 
 
 def auto_thresh_obs(
@@ -129,6 +132,91 @@ def filter_thresh_obs(
                     & (adata.obs[obs_cols[i]] > thresholds[obs_cols[i]]),
                     name,
                 ] = 0
+
+
+def ridge_pipe(
+    adata,
+    mito_names="^mt-",
+    n_hvgs=2000,
+    thresh_method="li",
+    obs_cols=[
+        "arcsinh_total_counts",
+        "arcsinh_n_genes_by_counts",
+        "gf_icf_total",
+        "pct_counts_mito",
+        "pct_counts_in_top_10_genes",
+    ],
+    directions=["above", "above", "above", "below", "below"],
+    alphas=(0.1, 1.0, 10.0),
+):
+    """
+    generate ridge regression model of cell quality
+
+    Parameters:
+        adata (anndata.AnnData): object containing unfiltered, raw scRNA-seq
+            counts in .X layer
+        mito_names (str): substring encompassing mitochondrial gene names for
+            calculation of mito expression
+        n_hvgs (int or None): number of HVGs to calculate using Seurat method
+            if None, do not calculate HVGs
+        thresh_method (str): one of 'otsu' (default), 'li', or 'mean'
+        obs_cols (list of str): name of column(s) to threshold from adata.obs
+        directions (list of str): 'below' or 'above', indicating which
+            direction to keep (label=1)
+        alphas (tuple of int): alpha values to test using RidgeClassifierCV
+
+    Returns:
+        rc (RidgeClassifierCV): trained ridge classifier
+
+        updated adata inplace to include 'train', 'ridge_score', and
+            'ridge_label' columns in .obs
+    """
+    # 1) preprocess counts and calculate required QC metrics
+    print("Preprocessing counts and generating metrics")
+    recipe_fcc(
+        adata,
+        X_final="arcsinh_norm",
+        mito_names=mito_names,
+        n_hvgs=n_hvgs,
+        target_sum=None,
+    )
+
+    # 2) threshold chosen heuristics using automated method
+    print("Thresholding on heuristics for training labels")
+    adata_thresh = auto_thresh_obs(adata, method=thresh_method, obs_cols=obs_cols)
+
+    # 3) create labels from combination of thresholds
+    filter_thresh_obs(
+        adata,
+        adata_thresh,
+        obs_cols=obs_cols,
+        directions=directions,
+        inclusive=True,
+        name="train",
+    )
+
+    # 4) train ridge regression classifier with cross validation
+    y = adata.obs["train"].copy(deep=True)  # training labels defined above
+    if n_hvgs is None:
+        # if no HVGs, train on all genes. NOTE: this slows computation considerably.
+        X = (
+            adata.X
+        )
+    else:
+        # use HVGs if provided
+        X = adata.X[:, adata.var["highly_variable"] == True]
+    print("Training ridge classifier with alpha values: {}".format(alphas))
+    rc = RidgeClassifierCV(alphas=alphas)
+    rc.fit(X, y)
+    print("Chosen alpha value: {}".format(rc.alpha_))
+
+    # 5) use ridge model to assign scores and labels
+    print("Assigning scores and labels from model")
+    adata.obs["ridge_score"] = rc.decision_function(X)
+    adata.obs["ridge_label"] = rc.predict(X)
+
+    print("Done!")
+    return rc
 
 
 def sampling_probabilities(
