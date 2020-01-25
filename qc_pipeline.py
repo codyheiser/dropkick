@@ -166,6 +166,7 @@ def ridge_pipe(
         alphas (tuple of int): alpha values to test using RidgeClassifierCV
 
     Returns:
+        adata_thresh (dict): dictionary of automated thresholds on heuristics
         rc (RidgeClassifierCV): trained ridge classifier
 
         updated adata inplace to include 'train', 'ridge_score', and
@@ -206,7 +207,7 @@ def ridge_pipe(
         # use HVGs if provided
         X = adata.X[:, adata.var["highly_variable"] == True]
     print("Training ridge classifier with alpha values: {}".format(alphas))
-    rc = RidgeClassifierCV(alphas=alphas)
+    rc = RidgeClassifierCV(alphas=alphas, store_cv_values=True)
     rc.fit(X, y)
     print("Chosen alpha value: {}".format(rc.alpha_))
 
@@ -216,7 +217,7 @@ def ridge_pipe(
     adata.obs["ridge_label"] = rc.predict(X)
 
     print("Done!")
-    return rc
+    return adata_thresh, rc
 
 
 def sampling_probabilities(
