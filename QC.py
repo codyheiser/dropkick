@@ -149,7 +149,7 @@ def gf_icf(adata, layer=None, transform="arcsinh", norm=None):
 
 
 def recipe_fcc(
-    adata, X_final="raw_counts", mito_names="MT-", target_sum=None, n_hvgs=2000
+    adata, X_final="raw_counts", mito_names="MT-", pct_ambient=5, target_sum=None, n_hvgs=2000
 ):
     """
     scanpy preprocessing recipe
@@ -186,18 +186,22 @@ def recipe_fcc(
 
     # identify mitochondrial genes
     adata.var["mito"] = adata.var_names.str.contains(mito_names)
+    # identify putative ambient genes by low dropout pct (<=5%)
+    adata.var["ambient"] = (adata.X.astype(bool).sum(axis=0)/adata.n_obs) >= (1-(pct_ambient/100))
     # calculate standard qc .obs and .var
     sc.pp.calculate_qc_metrics(
-        adata, qc_vars=["mito"], inplace=True, percent_top=[10, 50, 100, 200, 500]
+        adata, qc_vars=["mito","ambient"], inplace=True, percent_top=[10, 50, 100, 200]
     )
     # rank cells by total counts
     adata.obs["ranked_total_counts"] = np.argsort(adata.obs["total_counts"])
-    # arcsinh-transformed total counts
-    adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
 
     # arcsinh transform (adata.layers["arcsinh_norm"]) and add total for visualization
     arcsinh_norm(adata, norm="l1", scale=target_sum)
     adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
+    # other arcsinh-transformed metrics
+    adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
+    adata.obs["arcsinh_total_counts_mito"] = np.arcsinh(adata.obs["total_counts_mito"])
+    adata.obs["arcsinh_total_counts_ambient"] = np.arcsinh(adata.obs["total_counts_ambient"])
 
     # GF-ICF transform (adata.layers["gf_icf"], adata.obs["gf_icf_total"])
     gf_icf(adata)
