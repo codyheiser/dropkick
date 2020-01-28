@@ -444,6 +444,7 @@ if __name__ == "__main__":
             "obs_cols": args.obs_cols,
             "directions": args.directions,
             "alphas": args.alphas,
+            "chosen_alpha": ridge_model.alpha_,
             "mito_names": args.mito_names,
             "n_hvgs": args.n_hvgs,
             "thresh_method": args.thresh_method,
