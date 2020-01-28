@@ -4,12 +4,25 @@ Automated QC classifier pipeline
 
 @author: C Heiser
 """
+import argparse
+import os, errno
 import numpy as np
 import matplotlib.pyplot as plt
 import scanpy as sc
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
 from sklearn.linear_model import RidgeClassifierCV
 from QC import reorder_adata, arcsinh_norm, gf_icf, recipe_fcc
+
+
+def check_dir_exists(path):
+    """
+    Checks if directory already exists or not and creates it if it doesn't
+    """
+    try:
+        os.makedirs(path)
+    except OSError as exception:
+        if exception.errno != errno.EEXIST:
+            raise
 
 
 def auto_thresh_obs(
@@ -51,7 +64,7 @@ def auto_thresh_obs(
     return thresholds
 
 
-def plot_thresh_obs(adata, thresholds, bins=40):
+def plot_thresh_obs(adata, thresholds, bins=40, show=True):
     """
     plot automated thresholding on metrics in adata.obs as output by auto_thresh_obs()
 
@@ -71,7 +84,10 @@ def plot_thresh_obs(adata, thresholds, bins=40):
         axes[i].axvline(list(thresholds.values())[i], color="r")
         axes[i].set_title(list(thresholds.keys())[i])
     fig.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        return fig
 
 
 def filter_thresh_obs(
@@ -200,9 +216,7 @@ def ridge_pipe(
     y = adata.obs["train"].copy(deep=True)  # training labels defined above
     if n_hvgs is None:
         # if no HVGs, train on all genes. NOTE: this slows computation considerably.
-        X = (
-            adata.X
-        )
+        X = adata.X
     else:
         # use HVGs if provided
         X = adata.X[:, adata.var["highly_variable"] == True]
@@ -316,3 +330,133 @@ def generate_training_labels(
         np.random.choice(a=len(adata.obs), size=pos_size, replace=False, p=pos_prob),
         adata.obs.columns.get_loc(name),
     ] = 1
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "command", type=str, choices=["ridge", "twostep"],
+    )
+    parser.add_argument(
+        "-c",
+        "--counts",
+        type=str,
+        help="Input (cell x gene) counts matrix as .h5ad or tab delimited text file",
+        required=True,
+    )
+    parser.add_argument(
+        "--obs-cols",
+        type=str,
+        help="Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_mito'",
+        nargs="+",
+        required=True,
+    )
+    parser.add_argument(
+        "--directions",
+        type=str,
+        help="Direction of thresholding for each heuristic. Several can be specified with '--obs-cols above below'",
+        nargs="+",
+        required=True,
+    )
+    parser.add_argument(
+        "--alphas",
+        type=float,
+        help="Alpha values for ridge regression model. Several can be specified with '--alphas 100 200 300 400'",
+        nargs="+",
+        required=True,
+    )
+    parser.add_argument(
+        "--thresh-method",
+        type=str,
+        help="Method used for automatic thresholding on heuristics. One of ['otsu','li','mean']",
+        default="li",
+    )
+    parser.add_argument(
+        "--mito-names",
+        type=str,
+        help="Substring or regex defining mitochondrial genes",
+        default="^mt-",
+    )
+    parser.add_argument(
+        "--n-hvgs",
+        type=int,
+        help="Number of highly variable genes for training model",
+        default=2000,
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        help="Name for analysis. All output will be placed in [output-dir]/[name]/...",
+        nargs="?",
+        default="dropkeeper",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Output directory. All output will be placed in [output-dir]/[name]/...",
+        nargs="?",
+        default=".",
+    )
+    args = parser.parse_args()
+
+    # read in counts data
+    print("\nReading in unfiltered counts from {}".format(args.counts))
+    adata = sc.read(args.counts)
+    tmp = adata.copy()  # copy of AnnData to manipulate
+    # Check that output directory exists, create it if needed.
+    check_dir_exists(args.output_dir)
+
+    if args.command == "ridge":
+        thresholds, ridge_model = ridge_pipe(
+            tmp,
+            mito_names=args.mito_names,
+            n_hvgs=args.n_hvgs,
+            thresh_method=args.thresh_method,
+            obs_cols=args.obs_cols,
+            directions=args.directions,
+            alphas=args.alphas,
+        )
+        # generate plot of chosen training thresholds on heuristics
+        print(
+            "Saving threshold plots to {}/{}_{}_thresholds.png".format(
+                args.output_dir, args.name, args.thresh_method
+            )
+        )
+        thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
+        plt.savefig(
+            "{}/{}_{}_thresholds.png".format(
+                args.output_dir, args.name, args.thresh_method
+            )
+        )
+        # save new labels
+        print(
+            "Writing updated counts to {}/{}_{}.h5ad".format(
+                args.output_dir, args.name, args.command
+            )
+        )
+        adata.obs["train"], adata.obs["ridge_score"], adata.obs["ridge_label"] = (
+            tmp.obs["train"],
+            tmp.obs["ridge_score"],
+            tmp.obs["ridge_label"],
+        )
+        adata.uns["pipeline_args"] = {
+            "counts": args.counts,
+            "obs_cols": args.obs_cols,
+            "directions": args.directions,
+            "alphas": args.alphas,
+            "mito_names": args.mito_names,
+            "n_hvgs": args.n_hvgs,
+            "thresh_method": args.thresh_method,
+        }  # save command-line arguments to .uns for reference
+        adata.write(
+            "{}/{}_{}.h5ad".format(args.output_dir, args.name, args.command),
+            compression="gzip",
+        )
+
+    elif args.command == "twostep":
+        print("Coming Soon!")
+
+    else:
+        raise ValueError(
+            "Please provide a valid filtering command ('ridge', 'twostep')"
+        )
