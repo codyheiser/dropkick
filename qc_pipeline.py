@@ -73,6 +73,8 @@ def plot_thresh_obs(adata, thresholds, bins=40, show=True):
     Parameters:
         adata (anndata.AnnData): object containing unfiltered scRNA-seq data
         thresholds (dict): output of auto_thresh_obs() function
+        bins (int): number of bins for histogram
+        show (bool): show plot or return object
 
     Returns:
         plot of distributions of obs_cols in thresholds dictionary with corresponding threshold values
@@ -157,10 +159,7 @@ def ridge_pipe(
     mito_names="^mt-",
     n_hvgs=2000,
     thresh_method="li",
-    obs_cols=[
-        "arcsinh_n_genes_by_counts",
-        "pct_counts_mito",
-    ],
+    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_mito",],
     directions=["above", "below"],
     alphas=(100, 200, 300, 400),
 ):
@@ -337,10 +336,7 @@ def twostep_pipe(
     mito_names="^mt-",
     n_hvgs=2000,
     thresh_method="li",
-    obs_cols=[
-        "arcsinh_n_genes_by_counts",
-        "pct_counts_mito",
-    ],
+    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_mito",],
     directions=["above", "below"],
     pos_frac=0.7,
     neg_frac=0.3,
@@ -401,21 +397,54 @@ def twostep_pipe(
     adata.obs["pos_prob"] = 0
     for i in range(len(obs_cols)):
         print("Generating sampling probabilities from {}".format(obs_cols[i]))
-        sampling_probabilities(adata, obs_col=obs_cols[i], thresh=adata_thresh[obs_cols[i]], direction=directions[i], inclusive=True, suffix="neg", plot=False)
-        adata.obs["neg_prob"] += adata.obs["{}_neg".format(obs_cols[i])] # add probabilities to combined vector
-        if directions[i]=="above":
+        sampling_probabilities(
+            adata,
+            obs_col=obs_cols[i],
+            thresh=adata_thresh[obs_cols[i]],
+            direction=directions[i],
+            inclusive=True,
+            suffix="neg",
+            plot=False,
+        )
+        adata.obs["neg_prob"] += adata.obs[
+            "{}_neg".format(obs_cols[i])
+        ]  # add probabilities to combined vector
+        if directions[i] == "above":
             pos_dir = "below"
-        elif directions[i]=="below":
+        elif directions[i] == "below":
             pos_dir = "above"
-        sampling_probabilities(adata, obs_col=obs_cols[i], thresh=adata_thresh[obs_cols[i]], direction=pos_dir, inclusive=True, suffix="pos", plot=False)
-        adata.obs["pos_prob"] += adata.obs["{}_pos".format(obs_cols[i])] # add probabilities to combined vector
+        sampling_probabilities(
+            adata,
+            obs_col=obs_cols[i],
+            thresh=adata_thresh[obs_cols[i]],
+            direction=pos_dir,
+            inclusive=True,
+            suffix="pos",
+            plot=False,
+        )
+        adata.obs["pos_prob"] += adata.obs[
+            "{}_pos".format(obs_cols[i])
+        ]  # add probabilities to combined vector
     # normalize combined probabilities
     adata.obs["neg_prob"] /= adata.obs["neg_prob"].sum()
     adata.obs["pos_prob"] /= adata.obs["pos_prob"].sum()
 
     # 5) generate training labels
-    print("Picking {} positives (empty droplets/dead cells) and {} negatives (live cells) for training".format(int(pos_frac*(adata.n_obs - adata.obs['thresh_filter'].sum())), int(neg_frac*(adata.n_obs - adata.obs['thresh_filter'].sum()))))
-    generate_training_labels(adata, pos_prob=adata.obs["pos_prob"], pos_size=int(pos_frac*(adata.n_obs - adata.obs['thresh_filter'].sum())), neg_prob=adata.obs["neg_prob"], neg_size=int(neg_frac*(adata.n_obs - adata.obs['thresh_filter'].sum())), name="train", seed=seed)
+    print(
+        "Picking {} positives (empty droplets/dead cells) and {} negatives (live cells) for training".format(
+            int(pos_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
+            int(neg_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
+        )
+    )
+    generate_training_labels(
+        adata,
+        pos_prob=adata.obs["pos_prob"],
+        pos_size=int(pos_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
+        neg_prob=adata.obs["neg_prob"],
+        neg_size=int(neg_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
+        name="train",
+        seed=seed,
+    )
 
     # 4) train two-step classifier
     y = adata.obs["train"].copy(deep=True)  # training labels defined above
@@ -426,10 +455,20 @@ def twostep_pipe(
         # use HVGs if provided
         X = adata.X[:, adata.var["highly_variable"] == True]
     print("Training two-step classifier:")
-    adata.obs['twostep_score'], adata.obs['twostep_label'] = twoStep(clf=clf, X=X, y=y, thresh='min', n_iter=18)
-    print("Predicting remaining {} unlabeled barcodes with trained classifier.".format((y==-1).sum()))
-    adata.obs.loc[y==-1, "twostep_label"] = clf.predict(X[y==-1]) # predict remaining unlabeled cells using trained clf
-    adata.obs["twostep_label"] = (~adata.obs["twostep_label"].astype(bool)).astype(int) # flip labels so 1 is good cell
+    adata.obs["twostep_score"], adata.obs["twostep_label"] = twoStep(
+        clf=clf, X=X, y=y, thresh="min", n_iter=18
+    )
+    print(
+        "Predicting remaining {} unlabeled barcodes with trained classifier.".format(
+            (y == -1).sum()
+        )
+    )
+    adata.obs.loc[y == -1, "twostep_label"] = clf.predict(
+        X[y == -1]
+    )  # predict remaining unlabeled cells using trained clf
+    adata.obs["twostep_label"] = (~adata.obs["twostep_label"].astype(bool)).astype(
+        int
+    )  # flip labels so 1 is good cell
 
     print("Done!")
     return adata_thresh, clf
@@ -581,7 +620,9 @@ if __name__ == "__main__":
     elif args.command == "twostep":
         thresholds, twostep_model = twostep_pipe(
             tmp,
-            clf = RandomForestClassifier(n_estimators=500, n_jobs=-1), # use default clf for now
+            clf=RandomForestClassifier(
+                n_estimators=500, n_jobs=-1
+            ),  # use default clf for now
             mito_names=args.mito_names,
             n_hvgs=args.n_hvgs,
             thresh_method=args.thresh_method,
@@ -609,7 +650,13 @@ if __name__ == "__main__":
                 args.output_dir, args.name, args.command
             )
         )
-        adata.obs["train"], adata.obs["twostep_score"], adata.obs["twostep_label"], adata.obs["pos_prob"], adata.obs["neg_prob"] = (
+        (
+            adata.obs["train"],
+            adata.obs["twostep_score"],
+            adata.obs["twostep_label"],
+            adata.obs["pos_prob"],
+            adata.obs["neg_prob"],
+        ) = (
             tmp.obs["train"],
             tmp.obs["twostep_score"],
             tmp.obs["twostep_label"],
