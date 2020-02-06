@@ -6,7 +6,24 @@ Automated QC classifier pipeline
 """
 import numpy as np
 import matplotlib.pyplot as plt
-from skimage.filters import threshold_li, threshold_otsu, threshold_mean
+from skimage.filters import threshold_li, threshold_otsu, threshold_mean, threshold_isodata, threshold_yen, threshold_triangle
+
+
+# calculate the set difference between the threshold method and ken's filter, or the difference between the threshold method and another method
+def find_difference(adata, filterName1, filterName2, doPrint = 'p'):
+    filter1Index = adata.obs.loc[adata.obs[filterName1] == 0].index
+    filter2Index = adata.obs.loc[adata.obs[filterName2] == 0].index
+    
+    filter1DifFilter2 = len(set(filter1Index).difference(set(filter2Index))) # elements present in filter1 but not in filter2
+    filter2DifFilter1 = len(set(filter2Index).difference(set(filter1Index))) # elements present in filter2 but not in filter1
+    totalDif = len(set(s1.obs_names[s1.obs[filterName1]==0]) ^ set(s1.obs_names[s1.obs[filterName2]==0])) # total difference
+    
+    if (doPrint.lower() == 'p'):
+        print("Elements present in ", filterName1, " but not in ", filterName2, ": ", filter1DifFilter2)
+        print("Elements present in ", filterName2, " but not in ", filterName1, ": ", filter2DifFilter1)
+        print("Total difference: ", totalDif)
+        
+    return (filter1DifFilter2, filter2DifFilter1, totalDif)
 
 
 def auto_thresh_obs(
@@ -40,6 +57,12 @@ def auto_thresh_obs(
             thresholds[col] = threshold_li(tmp)
         elif method == "mean":
             thresholds[col] = threshold_mean(tmp)
+        elif method == "isodata":
+            thresholds[col] = threshold_isodata(tmp)
+        elif method == "yen":
+            thresholds[col] = threshold_yen(tmp)
+        elif method == "triangle":
+            thresholds[col] = threshold_triangle(tmp)
         else:
             raise ValueError(
                 "Please provide a valid threshold method ('otsu', 'li', 'mean')."
@@ -100,35 +123,35 @@ def filter_thresh_obs(
         updated adata with filter labels in adata.obs[name]
     """
     # initialize .obs column as all "good" cells
-    adata.obs[name] = 1
+    adata.obs[name] = 0
     # if any criteria are NOT met, label cells "bad"
     for i in range(len(obs_cols)):
         if directions[i] == "above":
             if inclusive:
                 adata.obs.loc[
-                    (adata.obs[name] == 1)
+                    (adata.obs[name] == 0)
                     & (adata.obs[obs_cols[i]] <= thresholds[obs_cols[i]]),
                     name,
-                ] = 0
+                ] = 1
             else:
                 adata.obs.loc[
-                    (adata.obs[name] == 1)
+                    (adata.obs[name] == 0)
                     & (adata.obs[obs_cols[i]] < thresholds[obs_cols[i]]),
                     name,
-                ] = 0
+                ] = 1
         elif directions[i] == "below":
             if inclusive:
                 adata.obs.loc[
-                    (adata.obs[name] == 1)
+                    (adata.obs[name] == 0)
                     & (adata.obs[obs_cols[i]] >= thresholds[obs_cols[i]]),
                     name,
-                ] = 0
+                ] = 1
             else:
                 adata.obs.loc[
-                    (adata.obs[name] == 1)
+                    (adata.obs[name] == 0)
                     & (adata.obs[obs_cols[i]] > thresholds[obs_cols[i]]),
                     name,
-                ] = 0
+                ] = 1
 
 
 def sampling_probabilities(
