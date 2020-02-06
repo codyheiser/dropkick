@@ -6,6 +6,8 @@ Utility functions for scRNA-seq quality control classifiers
 
 @authors: B Chen, C Heiser
 """
+import warnings
+
 # basic matrix/dataframe manipulation
 import numpy as np
 >>>>>>> classifier
@@ -109,23 +111,35 @@ def gf_icf(adata, layer=None, transform="arcsinh", norm=None):
     else:
         m = adata.layers[layer]
 
-    # number of cells containing each gene (sum nonzero along columns)
-    nt = m.astype(bool).sum(axis=0)
-    assert np.all(
-        nt
-    ), "Encountered {} genes with 0 cells by counts. Remove these before proceeding (i.e. sc.pp.filter_genes(adata,min_cells=1))".format(
-        np.size(nt) - np.count_nonzero(nt)
-    )
     # gene frequency in each cell (l1 norm along rows)
     tf = m / m.sum(axis=1)[:, None]
 
-    # inverse cell frequency (total cells / number of cells containing each gene)
-    if transform == "arcsinh":
-        idf = np.arcsinh(adata.n_obs / nt)
-    elif transform == "log":
-        idf = np.log(adata.n_obs / nt)
+    # number of cells containing each gene (sum nonzero along columns)
+    nt = m.astype(bool).sum(axis=0)
+
+    # if there are genes detected in zero cells, use "classic" method of pseudocount = 1
+    if not np.all(nt):
+        warnings.warn(
+            "Encountered {} genes with 0 cells by counts. Consider removing these before proceeding (i.e. sc.pp.filter_genes(adata,min_cells=1))".format(
+                np.size(nt) - np.count_nonzero(nt)
+            )
+        )
+        # inverse cell frequency (total cells / number of cells containing each gene)
+        if transform == "arcsinh":
+            idf = np.arcsinh((adata.n_obs + 1) / (nt + 1))
+        elif transform == "log":
+            idf = np.log((adata.n_obs + 1) / (nt + 1))
+        else:
+            raise ValueError("Please provide a valid transform (log or arcsinh).")
+    # otherwise, we can use "pure" GF-ICF transformation without potentially harmful pseudocount (preferred)
     else:
-        raise ValueError("Please provide a valid transform (log or arcsinh).")
+        # inverse cell frequency (total cells / number of cells containing each gene)
+        if transform == "arcsinh":
+            idf = np.arcsinh(adata.n_obs / nt)
+        elif transform == "log":
+            idf = np.log(adata.n_obs / nt)
+        else:
+            raise ValueError("Please provide a valid transform (log or arcsinh).")
 
     # save GF-ICF scores to .layers and total GF-ICF per cell in .obs
     tf_idf = tf * idf
@@ -137,7 +151,7 @@ def gf_icf(adata, layer=None, transform="arcsinh", norm=None):
 
 
 def recipe_fcc(
-    adata, X_final="raw_counts", mito_names="MT-", target_sum=None, n_hvgs=2000
+    adata, X_final="raw_counts", mito_names="MT-", pct_ambient=5, target_sum=None, n_hvgs=2000
 ):
     """
     scanpy preprocessing recipe
@@ -150,7 +164,8 @@ def recipe_fcc(
             calculation of mito expression
         target_sum (int): total sum of counts for each cell prior to arcsinh 
             and log1p transformations; default 1e6 for TPM
-        n_hvgs (int): number of HVGs to calculate using Seurat method
+        n_hvgs (int or None): number of HVGs to calculate using Seurat method
+            if None, do not calculate HVGs
 
     Returns:
         AnnData.AnnData: adata is edited in place to include:
@@ -163,7 +178,7 @@ def recipe_fcc(
             (adata.layers["arcsinh_norm"])
         - log1p transformation of normalized counts
             (adata.X, adata.layers["log1p_norm"])
-        - highly variable genes (adata.var["highly_variable"])
+        - highly variable genes if desired (adata.var["highly_variable"])
     """
     # reorder cells by total counts descending
     reorder_adata(adata, descending=True)
@@ -173,16 +188,22 @@ def recipe_fcc(
 
     # identify mitochondrial genes
     adata.var["mito"] = adata.var_names.str.contains(mito_names)
+    # identify putative ambient genes by low dropout pct (<=5%)
+    adata.var["ambient"] = (adata.X.astype(bool).sum(axis=0)/adata.n_obs) >= (1-(pct_ambient/100))
     # calculate standard qc .obs and .var
-    sc.pp.calculate_qc_metrics(adata, qc_vars=["mito"], inplace=True)
+    sc.pp.calculate_qc_metrics(
+        adata, qc_vars=["mito","ambient"], inplace=True, percent_top=[10, 50, 100, 200]
+    )
     # rank cells by total counts
     adata.obs["ranked_total_counts"] = np.argsort(adata.obs["total_counts"])
-    # arcsinh-transformed total counts
-    adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
 
     # arcsinh transform (adata.layers["arcsinh_norm"]) and add total for visualization
     arcsinh_norm(adata, norm="l1", scale=target_sum)
     adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
+    # other arcsinh-transformed metrics
+    adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
+    adata.obs["arcsinh_total_counts_mito"] = np.arcsinh(adata.obs["total_counts_mito"])
+    adata.obs["arcsinh_total_counts_ambient"] = np.arcsinh(adata.obs["total_counts_ambient"])
 
     # GF-ICF transform (adata.layers["gf_icf"], adata.obs["gf_icf_total"])
     gf_icf(adata)
@@ -199,7 +220,8 @@ def recipe_fcc(
     adata.layers["log1p_norm"] = adata.X.copy()  # save to .layers
 
     # HVGs
-    sc.pp.highly_variable_genes(adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat")
+    if n_hvgs is not None:
+        sc.pp.highly_variable_genes(adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat")
 
     # set .X as desired for downstream processing; default raw_counts
     adata.X = adata.layers[X_final].copy()
