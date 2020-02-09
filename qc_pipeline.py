@@ -30,11 +30,8 @@ def check_dir_exists(path):
 def auto_thresh_obs(
     adata,
     obs_cols=[
-        "arcsinh_total_counts",
         "arcsinh_n_genes_by_counts",
-        "gf_icf_total",
-        "pct_counts_mito",
-        "pct_counts_in_top_50_genes",
+        "pct_counts_ambient",
     ],
     method="otsu",
 ):
@@ -158,10 +155,10 @@ def ridge_pipe(
     adata,
     mito_names="^mt-",
     n_hvgs=2000,
-    thresh_method="li",
-    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_mito",],
+    thresh_method="otsu",
+    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(100, 200, 300, 400),
+    alphas=(100, 200, 300, 400,500),
 ):
     """
     generate ridge regression model of cell quality
@@ -173,7 +170,7 @@ def ridge_pipe(
             calculation of mito expression
         n_hvgs (int or None): number of HVGs to calculate using Seurat method
             if None, do not calculate HVGs
-        thresh_method (str): one of 'li' (default), 'otsu', or 'mean'
+        thresh_method (str): one of 'otsu' (default), 'li', or 'mean'
         obs_cols (list of str): name of column(s) to threshold from adata.obs
         directions (list of str): 'below' or 'above', indicating which
             direction to keep (label=1)
@@ -187,7 +184,7 @@ def ridge_pipe(
             'ridge_label' columns in .obs
     """
     # 1) preprocess counts and calculate required QC metrics
-    print("Preprocessing counts and generating metrics")
+    print("Preprocessing counts and calculating metrics")
     recipe_fcc(
         adata,
         X_final="arcsinh_norm",
@@ -369,7 +366,7 @@ def twostep_pipe(
             'ridge_label' columns in .obs
     """
     # 1) preprocess counts and calculate required QC metrics
-    print("Preprocessing counts and generating metrics")
+    print("Preprocessing counts and calculating metrics")
     recipe_fcc(
         adata,
         X_final="arcsinh_norm",
@@ -487,24 +484,38 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument(
+        "--name",
+        type=str,
+        help="[all] Name for analysis. Output will be placed in [output-dir]/[name]/...",
+        nargs="?",
+        default="dropkeeper",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="[all] Output directory. Output will be placed in [output-dir]/[name]/...",
+        nargs="?",
+        default=".",
+    )
+    parser.add_argument(
         "--obs-cols",
         type=str,
         help="[all] Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_mito'",
         nargs="+",
-        required=True,
+        default=["arcsinh_n_genes_by_counts","pct_counts_ambient"],
     )
     parser.add_argument(
         "--directions",
         type=str,
         help="[all] Direction of thresholding for each heuristic. Several can be specified with '--obs-cols above below'",
         nargs="+",
-        required=True,
+        default=["above","below"],
     )
     parser.add_argument(
         "--thresh-method",
         type=str,
         help="[all] Method used for automatic thresholding on heuristics. One of ['otsu','li','mean']",
-        default="li",
+        default="otsu",
     )
     parser.add_argument(
         "--mito-names",
@@ -518,26 +529,13 @@ if __name__ == "__main__":
         help="[all] Number of highly variable genes for training model",
         default=2000,
     )
-    parser.add_argument(
-        "--name",
-        type=str,
-        help="[all] Name for analysis. All output will be placed in [output-dir]/[name]/...",
-        nargs="?",
-        default="dropkeeper",
-    )
-    parser.add_argument(
-        "--output-dir",
-        type=str,
-        help="[all] Output directory. All output will be placed in [output-dir]/[name]/...",
-        nargs="?",
-        default=".",
-    )
 
     parser.add_argument(
         "--alphas",
         type=float,
         help="[ridge] Alpha values for ridge regression model. Several can be specified with '--alphas 100 200 300 400'",
         nargs="*",
+        default=[100, 200, 300, 400, 500],
     )
 
     parser.add_argument(
