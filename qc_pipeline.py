@@ -28,12 +28,7 @@ def check_dir_exists(path):
 
 
 def auto_thresh_obs(
-    adata,
-    obs_cols=[
-        "arcsinh_n_genes_by_counts",
-        "pct_counts_ambient",
-    ],
-    method="otsu",
+    adata, obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_ambient"], method="otsu",
 ):
     """
     automated thresholding on metrics in adata.obs
@@ -94,14 +89,8 @@ def plot_thresh_obs(adata, thresholds, bins=40, show=True):
 def filter_thresh_obs(
     adata,
     thresholds,
-    obs_cols=[
-        "arcsinh_total_counts",
-        "arcsinh_n_genes_by_counts",
-        "gf_icf_total",
-        "pct_counts_mito",
-        "pct_counts_in_top_50_genes",
-    ],
-    directions=["above", "above", "above", "below", "below",],
+    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_ambient"],
+    directions=["above", "below",],
     inclusive=True,
     name="thresh_filter",
 ):
@@ -153,12 +142,12 @@ def filter_thresh_obs(
 
 def ridge_pipe(
     adata,
-    mito_names="^mt-",
+    mito_names="^mt-|^MT-",
     n_hvgs=2000,
     thresh_method="otsu",
-    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
+    metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(100, 200, 300, 400,500),
+    alphas=(100, 200, 300, 400, 500),
 ):
     """
     generate ridge regression model of cell quality
@@ -171,7 +160,7 @@ def ridge_pipe(
         n_hvgs (int or None): number of HVGs to calculate using Seurat method
             if None, do not calculate HVGs
         thresh_method (str): one of 'otsu' (default), 'li', or 'mean'
-        obs_cols (list of str): name of column(s) to threshold from adata.obs
+        metrics (list of str): name of column(s) to threshold from adata.obs
         directions (list of str): 'below' or 'above', indicating which
             direction to keep (label=1)
         alphas (tuple of int): alpha values to test using RidgeClassifierCV
@@ -194,14 +183,14 @@ def ridge_pipe(
     )
 
     # 2) threshold chosen heuristics using automated method
-    print("Thresholding on heuristics for training labels")
-    adata_thresh = auto_thresh_obs(adata, method=thresh_method, obs_cols=obs_cols)
+    print("Thresholding on heuristics for training labels: {}".format(metrics))
+    adata_thresh = auto_thresh_obs(adata, method=thresh_method, obs_cols=metrics)
 
     # 3) create labels from combination of thresholds
     filter_thresh_obs(
         adata,
         adata_thresh,
-        obs_cols=obs_cols,
+        obs_cols=metrics,
         directions=directions,
         inclusive=True,
         name="train",
@@ -330,7 +319,7 @@ def generate_training_labels(
 def twostep_pipe(
     adata,
     clf,
-    mito_names="^mt-",
+    mito_names="^mt-|^MT-",
     n_hvgs=2000,
     thresh_method="li",
     obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_mito",],
@@ -502,14 +491,14 @@ if __name__ == "__main__":
         type=str,
         help="[all] Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_mito'",
         nargs="+",
-        default=["arcsinh_n_genes_by_counts","pct_counts_ambient"],
+        default=["arcsinh_n_genes_by_counts", "pct_counts_ambient"],
     )
     parser.add_argument(
         "--directions",
         type=str,
         help="[all] Direction of thresholding for each heuristic. Several can be specified with '--obs-cols above below'",
         nargs="+",
-        default=["above","below"],
+        default=["above", "below"],
     )
     parser.add_argument(
         "--thresh-method",
@@ -521,7 +510,7 @@ if __name__ == "__main__":
         "--mito-names",
         type=str,
         help="[all] Substring or regex defining mitochondrial genes",
-        default="^mt-",
+        default="^mt-|^MT-",
     )
     parser.add_argument(
         "--n-hvgs",
@@ -573,7 +562,7 @@ if __name__ == "__main__":
             mito_names=args.mito_names,
             n_hvgs=args.n_hvgs,
             thresh_method=args.thresh_method,
-            obs_cols=args.obs_cols,
+            metrics=args.obs_cols,
             directions=args.directions,
             alphas=args.alphas,
         )

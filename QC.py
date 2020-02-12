@@ -149,7 +149,12 @@ def gf_icf(adata, layer=None, transform="arcsinh", norm=None):
 
 
 def recipe_fcc(
-    adata, X_final="raw_counts", mito_names="MT-", pct_ambient=5, target_sum=None, n_hvgs=2000
+    adata,
+    X_final="raw_counts",
+    mito_names="^mt-|^MT-",
+    n_ambient=10,
+    target_sum=None,
+    n_hvgs=2000,
 ):
     """
     scanpy preprocessing recipe
@@ -160,6 +165,7 @@ def recipe_fcc(
             ("raw_counts","gf_icf","log1p_norm","arcsinh_norm")
         mito_names (str): substring encompassing mitochondrial gene names for
             calculation of mito expression
+        n_ambient (int): number of ambient genes to call. top genes by cells.
         target_sum (int): total sum of counts for each cell prior to arcsinh 
             and log1p transformations; default 1e6 for TPM
         n_hvgs (int or None): number of HVGs to calculate using Seurat method
@@ -186,11 +192,21 @@ def recipe_fcc(
 
     # identify mitochondrial genes
     adata.var["mito"] = adata.var_names.str.contains(mito_names)
-    # identify putative ambient genes by low dropout pct (<=5%)
-    adata.var["ambient"] = (adata.X.astype(bool).sum(axis=0)/adata.n_obs) >= (1-(pct_ambient/100))
+    # identify putative ambient genes by lowest dropout pct (top 10)
+    adata.var["ambient"] = adata.X.astype(bool).sum(axis=0) / adata.n_obs
+    print(
+        "Top {} ambient genes have dropout rates between {} and {} percent".format(
+            n_ambient,
+            round((1 - adata.var.ambient.nlargest(n=n_ambient).max()) * 100, 2),
+            round((1 - adata.var.ambient.nlargest(n=n_ambient).min()) * 100, 2),
+        )
+    )
+    adata.var["ambient"] = (
+        adata.var.ambient >= adata.var.ambient.nlargest(n=n_ambient).min()
+    )
     # calculate standard qc .obs and .var
     sc.pp.calculate_qc_metrics(
-        adata, qc_vars=["mito","ambient"], inplace=True, percent_top=[10, 50, 100, 200]
+        adata, qc_vars=["mito", "ambient"], inplace=True, percent_top=[10, 50, 100]
     )
     # rank cells by total counts
     adata.obs["ranked_total_counts"] = np.argsort(adata.obs["total_counts"])
@@ -201,7 +217,9 @@ def recipe_fcc(
     # other arcsinh-transformed metrics
     adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
     adata.obs["arcsinh_total_counts_mito"] = np.arcsinh(adata.obs["total_counts_mito"])
-    adata.obs["arcsinh_total_counts_ambient"] = np.arcsinh(adata.obs["total_counts_ambient"])
+    adata.obs["arcsinh_total_counts_ambient"] = np.arcsinh(
+        adata.obs["total_counts_ambient"]
+    )
 
     # GF-ICF transform (adata.layers["gf_icf"], adata.obs["gf_icf_total"])
     gf_icf(adata)
@@ -219,7 +237,9 @@ def recipe_fcc(
 
     # HVGs
     if n_hvgs is not None:
-        sc.pp.highly_variable_genes(adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat")
+        sc.pp.highly_variable_genes(
+            adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat"
+        )
 
     # set .X as desired for downstream processing; default raw_counts
     adata.X = adata.layers[X_final].copy()
