@@ -5,6 +5,7 @@ Automated testing of cell filtering labels
 @author: C Heiser
 """
 import argparse
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 import scanpy as sc
@@ -207,13 +208,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--name",
-        type=str,
-        help="Name for analysis. All output will be placed in [output-dir]/[name]/...",
-        nargs="?",
-        default="dropkeeper",
-    )
-    parser.add_argument(
         "--output-dir",
         type=str,
         help="Output directory. All output will be placed in [output-dir]/[name]/...",
@@ -251,6 +245,8 @@ if __name__ == "__main__":
     )
 
     args = parser.parse_args()
+    # get name for saving outputs
+    name = os.path.splitext(os.path.basename(args.counts))[0]
     # read in AnnData object
     print("\nReading in counts data from {}\n".format(args.counts))
     adata = sc.read(args.counts)
@@ -261,13 +257,13 @@ if __name__ == "__main__":
     # generate plot of chosen metrics' distribution in two cell label populations
     print(
         "Saving distribution plots to {}/{}_metrics.png".format(
-            args.output_dir, args.name
+            args.output_dir, name
         )
     )
     plot_set_obs(adata, labels=args.labels, metrics=args.metrics, bins=40, show=False)
     plt.savefig(
         "{}/{}_metrics.png".format(
-            args.output_dir, args.name
+            args.output_dir, name
         )
     )
     # print significant GEP usages to console
@@ -275,23 +271,23 @@ if __name__ == "__main__":
     # generate plot of significant GEP distributions
     print(
         "Saving significant NMF GEP distribution plots to {}/{}_sigGEPs.png".format(
-            args.output_dir, args.name
+            args.output_dir, name
         )
     )
     fig.savefig(
         "{}/{}_sigGEPs.png".format(
-            args.output_dir, args.name
+            args.output_dir, name
         )
     )
     # generate plot of significant GEP loadings
     print(
         "Saving significant NMF GEP loadings to {}/{}_sigspectra.png".format(
-            args.output_dir, args.name
+            args.output_dir, name
         )
     )
     rank_genes(adata, indices=[int(i.split('_', 1)[1])-1 for i in sig], show=False)
     plt.savefig(
         "{}/{}_sigspectra.png".format(
-            args.output_dir, args.name
+            args.output_dir, name
         )
     )
