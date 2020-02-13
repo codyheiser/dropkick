@@ -169,8 +169,8 @@ def ridge_pipe(
         adata_thresh (dict): dictionary of automated thresholds on heuristics
         rc (RidgeClassifierCV): trained ridge classifier
 
-        updated adata inplace to include 'train', 'ridge_score', and
-            'ridge_label' columns in .obs
+        updated adata inplace to include 'train', 'dropkeeper_score', and
+            'dropkeeper_label' columns in .obs
     """
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
@@ -211,8 +211,8 @@ def ridge_pipe(
 
     # 5) use ridge model to assign scores and labels
     print("Assigning scores and labels from model")
-    adata.obs["ridge_score"] = rc.decision_function(X)
-    adata.obs["ridge_label"] = rc.predict(X)
+    adata.obs["dropkeeper_score"] = rc.decision_function(X)
+    adata.obs["dropkeeper_label"] = rc.predict(X)
 
     print("Done!")
     return adata_thresh, rc
@@ -351,8 +351,8 @@ def twostep_pipe(
         adata_thresh (dict): dictionary of automated thresholds on heuristics
         rc (RidgeClassifierCV): trained ridge classifier
 
-        updated adata inplace to include 'train', 'ridge_score', and
-            'ridge_label' columns in .obs
+        updated adata inplace to include 'train', 'dropkeeper_score', and
+            'dropkeeper_label' columns in .obs
     """
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
@@ -441,7 +441,7 @@ def twostep_pipe(
         # use HVGs if provided
         X = adata.X[:, adata.var["highly_variable"] == True]
     print("Training two-step classifier:")
-    adata.obs["twostep_score"], adata.obs["twostep_label"] = twoStep(
+    adata.obs["dropkeeper_score"], adata.obs["dropkeeper_label"] = twoStep(
         clf=clf, X=X, y=y, thresh="min", n_iter=18
     )
     print(
@@ -449,10 +449,10 @@ def twostep_pipe(
             (y == -1).sum()
         )
     )
-    adata.obs.loc[y == -1, "twostep_label"] = clf.predict(
+    adata.obs.loc[y == -1, "dropkeeper_label"] = clf.predict(
         X[y == -1]
     )  # predict remaining unlabeled cells using trained clf
-    adata.obs["twostep_label"] = (~adata.obs["twostep_label"].astype(bool)).astype(
+    adata.obs["dropkeeper_label"] = (~adata.obs["dropkeeper_label"].astype(bool)).astype(
         int
     )  # flip labels so 1 is good cell
 
@@ -584,10 +584,10 @@ if __name__ == "__main__":
                 args.output_dir, args.name, args.command
             )
         )
-        adata.obs["train"], adata.obs["ridge_score"], adata.obs["ridge_label"] = (
+        adata.obs["train"], adata.obs["dropkeeper_score"], adata.obs["dropkeeper_label"] = (
             tmp.obs["train"],
-            tmp.obs["ridge_score"],
-            tmp.obs["ridge_label"],
+            tmp.obs["dropkeeper_score"],
+            tmp.obs["dropkeeper_label"],
         )
         adata.uns["pipeline_args"] = {
             "counts": args.counts,
@@ -639,14 +639,14 @@ if __name__ == "__main__":
         )
         (
             adata.obs["train"],
-            adata.obs["twostep_score"],
-            adata.obs["twostep_label"],
+            adata.obs["dropkeeper_score"],
+            adata.obs["dropkeeper_label"],
             adata.obs["pos_prob"],
             adata.obs["neg_prob"],
         ) = (
             tmp.obs["train"],
-            tmp.obs["twostep_score"],
-            tmp.obs["twostep_label"],
+            tmp.obs["dropkeeper_score"],
+            tmp.obs["dropkeeper_label"],
             tmp.obs["pos_prob"],
             tmp.obs["neg_prob"],
         )

@@ -247,7 +247,7 @@ if __name__ == "__main__":
         "--mito-names",
         type=str,
         help="Substring or regex defining mitochondrial genes",
-        default="^mt-",
+        default="^mt-|^MT-",
     )
 
     args = parser.parse_args()
