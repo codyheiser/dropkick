@@ -473,13 +473,6 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument(
-        "--name",
-        type=str,
-        help="[all] Name for analysis. Output will be placed in [output-dir]/[name]/...",
-        nargs="?",
-        default="dropkeeper",
-    )
-    parser.add_argument(
         "--output-dir",
         type=str,
         help="[all] Output directory. Output will be placed in [output-dir]/[name]/...",
@@ -555,6 +548,8 @@ if __name__ == "__main__":
     tmp = adata.copy()  # copy of AnnData to manipulate
     # Check that output directory exists, create it if needed.
     check_dir_exists(args.output_dir)
+    # get basename of file for writing outputs
+    name = os.path.splitext(os.path.basename(args.counts))[0]
 
     if args.command == "ridge":
         thresholds, ridge_model = ridge_pipe(
@@ -569,19 +564,19 @@ if __name__ == "__main__":
         # generate plot of chosen training thresholds on heuristics
         print(
             "Saving threshold plots to {}/{}_{}_thresholds.png".format(
-                args.output_dir, args.name, args.thresh_method
+                args.output_dir, name, args.thresh_method
             )
         )
         thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
         plt.savefig(
             "{}/{}_{}_thresholds.png".format(
-                args.output_dir, args.name, args.thresh_method
+                args.output_dir, name, args.thresh_method
             )
         )
         # save new labels
         print(
             "Writing updated counts to {}/{}_{}.h5ad".format(
-                args.output_dir, args.name, args.command
+                args.output_dir, name, args.command
             )
         )
         adata.obs["train"], adata.obs["dropkeeper_score"], adata.obs["dropkeeper_label"] = (
@@ -600,7 +595,7 @@ if __name__ == "__main__":
             "thresh_method": args.thresh_method,
         }  # save command-line arguments to .uns for reference
         adata.write(
-            "{}/{}_{}.h5ad".format(args.output_dir, args.name, args.command),
+            "{}/{}_{}.h5ad".format(args.output_dir, name, args.command),
             compression="gzip",
         )
 
@@ -622,19 +617,19 @@ if __name__ == "__main__":
         # generate plot of chosen training thresholds on heuristics
         print(
             "Saving threshold plots to {}/{}_{}_thresholds.png".format(
-                args.output_dir, args.name, args.thresh_method
+                args.output_dir, name, args.thresh_method
             )
         )
         thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
         plt.savefig(
             "{}/{}_{}_thresholds.png".format(
-                args.output_dir, args.name, args.thresh_method
+                args.output_dir, name, args.thresh_method
             )
         )
         # save new labels
         print(
             "Writing updated counts to {}/{}_{}.h5ad".format(
-                args.output_dir, args.name, args.command
+                args.output_dir, name, args.command
             )
         )
         (
@@ -662,7 +657,7 @@ if __name__ == "__main__":
             "seed": args.seed,
         }  # save command-line arguments to .uns for reference
         adata.write(
-            "{}/{}_{}.h5ad".format(args.output_dir, args.name, args.command),
+            "{}/{}_{}.h5ad".format(args.output_dir, name, args.command),
             compression="gzip",
         )
 

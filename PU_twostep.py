@@ -58,11 +58,11 @@ def twoStep(clf, X, y, n_iter=10, thresh="min"):
             break
 
         print(
-            "Step 1 labeled {} new positives and {} new negatives. {} unlabeled remaining.".format(
+            "\tStep 1 labeled {} new positives and {} new negatives. {} unlabeled remaining.".format(
                 len(iP_new), len(iN_new), len(y[y == -1])
             )
         )
-        print("Iteration {}: Doing step 2... ".format(i + 1), end="")
+        print("\tIteration {}: Doing step 2...".format(i + 1), end="")
 
         # STEP 2
         # retrain on new labels and get new scores
