@@ -23,8 +23,6 @@ from sklearn.multiclass import OneVsRestClassifier
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-sns.set(style="white")
-
 
 # scanpy functions
 def reorder_adata(adata, descending=True):
@@ -361,44 +359,6 @@ def cluster_p_threshold(AnnData, threshold=0.05):
 
 
 # machine learning evaluation functions
-def kfold_split(data, labels, n_splits, seed=None, shuffle=True):
-    """
-        split obs using k-fold strategy to cross-validate
-            returns: dictionary with keys ['train','test'], which each contain a dictionary with keys ['data','labels'].
-                values for ['data','labels'] are list of matrices/vectors
-            ex: train data for the 3rd split can be indexed by `split['train']['data'][2]`,
-                and its corresponding labels by `split['train']['labels'][2]`
-        """
-    kf = KFold(
-        n_splits=n_splits, shuffle=shuffle, random_state=seed
-    )  # generate KFold object for splitting data
-    splits = {
-        "train": {"data": [], "labels": []},
-        "test": {"data": [], "labels": []},
-    }  # initiate empty dictionary to dump matrix subsets into
-
-    for train_i, test_i in kf.split(data):
-        splits["train"]["data"].append(data[train_i, :])
-        splits["train"]["labels"].append(labels[train_i])
-        splits["test"]["data"].append(data[test_i, :])
-        splits["test"]["labels"].append(labels[test_i])
-
-    return splits
-
-
-def validator(splits, classifier):
-    """loops through kfold_split object and calculates confusion matrix and accuracy scores for given classifier"""
-    for split in range(0, len(splits["train"]["data"])):
-        classifier.fit(splits["train"]["data"][split], splits["train"]["labels"][split])
-        prediction = classifier.predict(splits["test"]["data"][split])
-        conf_matrix = confusion_matrix(splits["test"]["labels"][split], prediction)
-        score = classifier.score(
-            splits["test"]["data"][split], splits["test"]["labels"][split]
-        )
-
-        print("\nSplit {}: {}\n{}".format(split, score, conf_matrix))
-
-
 def plot_cm(cm):
     """plot confusion matrix using seaborn for pretty output"""
     plt.figure(figsize=(3, 3))
@@ -514,88 +474,3 @@ def roc_kfold(clf, X, y, k, seed=None):
 
     plot_cm(cm)
     return out
-
-
-def multiclass_roc(clf, X_train, X_test, y_train, y_test, plot_out=True):
-    """Run multiclass classifier and plot ROC curves"""
-    # binarize output
-    y_train = label_binarize(y_train, classes=y_train.unique())
-    y_test = label_binarize(y_test, classes=y_test.unique())
-
-    # get expected number of classes from labels
-    n_classes = y_train.shape[1]
-
-    # use onevsrest method
-    clf = OneVsRestClassifier(clf)
-
-    # determine ROC scores
-    y_score = clf.fit(X_train, y_train).decision_function(X_test)
-
-    # compute ROC curve and area for each class
-    fpr = dict()
-    tpr = dict()
-    roc_auc = dict()
-    for i in range(n_classes):
-        fpr[i], tpr[i], _ = roc_curve(y_test[:, i], y_score[:, i])
-        roc_auc[i] = auc(fpr[i], tpr[i])
-
-    # compute micro-avg ROC curve and area
-    fpr["micro"], tpr["micro"], _ = roc_curve(y_test.ravel(), y_score.ravel())
-    roc_auc["micro"] = auc(fpr["micro"], tpr["micro"])
-
-    # compute macro-avg ROC curve and area
-    # aggregate all false positive rates
-    all_fpr = np.unique(np.concatenate([fpr[i] for i in range(n_classes)]))
-
-    # interpolate all ROC curves
-    mean_tpr = np.zeros_like(all_fpr)
-    for i in range(n_classes):
-        mean_tpr += interp(all_fpr, fpr[i], tpr[i])
-
-    # average and compute AUC
-    mean_tpr /= n_classes
-
-    fpr["macro"] = all_fpr
-    tpr["macro"] = mean_tpr
-    roc_auc["macro"] = auc(fpr["macro"], tpr["macro"])
-
-    if plot_out:
-        # plot all ROC curves
-        plt.figure()
-        plt.plot([0, 1], [0, 1], "k--", lw=3)
-        plt.plot(
-            fpr["micro"],
-            tpr["micro"],
-            label="micro-avg ROC (area = {0:0.2f})".format(roc_auc["micro"]),
-            color="deeppink",
-            linestyle=":",
-            linewidth=4,
-        )
-
-        plt.plot(
-            fpr["macro"],
-            tpr["macro"],
-            label="macro-avg ROC (area = {0:0.2f})".format(roc_auc["macro"]),
-            color="navy",
-            linestyle=":",
-            linewidth=4,
-        )
-
-        colors = cycle(["aqua", "darkorange", "cornflowerblue"])
-        for i, color in zip(range(n_classes), colors):
-            plt.plot(
-                fpr[i],
-                tpr[i],
-                color=color,
-                lw=3,
-                label="ROC curve of class {0} (area = {1:0.2f})".format(i, roc_auc[i]),
-            )
-
-        plt.xlim([0.0, 1.0])
-        plt.ylim([0.0, 1.05])
-        plt.xlabel("False Positive Rate")
-        plt.ylabel("True Positive Rate")
-        plt.legend(loc="best")
-        plt.show()
-
-    return roc_auc
