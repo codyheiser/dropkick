@@ -3,6 +3,27 @@
 Automated testing of cell filtering labels
 
 @author: C Heiser
+
+usage: qc_test.py [-h] -c COUNTS -l LABELS [LABELS ...]
+                  [-m METRICS [METRICS ...]] [--mito-names MITO_NAMES]
+                  [--output-dir [OUTPUT_DIR]] [--cnmf]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -c COUNTS, --counts COUNTS
+                        Input (cell x gene) counts matrix as .h5ad file
+  -l LABELS [LABELS ...], --labels LABELS [LABELS ...]
+                        Labels defining cell sets to compare
+  -m METRICS [METRICS ...], --metrics METRICS [METRICS ...]
+                        Heuristics for comparing. Several can be specified
+                        with e.g. '--metrics arcsinh_total_counts
+                        arcsinh_n_genes_by_counts pct_counts_mito'
+  --mito-names MITO_NAMES
+                        Substring or regex defining mitochondrial genes
+  --output-dir [OUTPUT_DIR]
+                        Output directory. All output will be placed in
+                        [output-dir]/[name]...
+  --cnmf                Are cNMF usages available for testing?
 """
 import argparse
 import os
@@ -12,7 +33,7 @@ import scanpy as sc
 import seaborn as sns
 from matplotlib import gridspec
 from scipy.stats import mannwhitneyu
-from QC import reorder_adata, arcsinh_norm, gf_icf, recipe_fcc
+from qc_pipeline import recipe_dropkeeper
 
 
 def set_diff(adata, labels, metrics=None):
@@ -208,13 +229,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--output-dir",
-        type=str,
-        help="Output directory. All output will be placed in [output-dir]/[name]/...",
-        nargs="?",
-        default=".",
-    )
-    parser.add_argument(
         "-c",
         "--counts",
         type=str,
@@ -235,13 +249,25 @@ if __name__ == "__main__":
         type=str,
         help="Heuristics for comparing. Several can be specified with e.g. '--metrics arcsinh_total_counts arcsinh_n_genes_by_counts pct_counts_mito'",
         nargs="+",
-        required=True,
+        default=["arcsinh_total_counts","arcsinh_n_genes_by_counts","pct_counts_ambient","pct_counts_mito"],
     )
     parser.add_argument(
         "--mito-names",
         type=str,
         help="Substring or regex defining mitochondrial genes",
         default="^mt-|^MT-",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Output directory. All output will be placed in [output-dir]/[name]...",
+        nargs="?",
+        default=".",
+    )
+    parser.add_argument(
+        "--cnmf",
+        help="Are cNMF usages available for testing?",
+        action="store_true"
     )
 
     args = parser.parse_args()
@@ -251,7 +277,7 @@ if __name__ == "__main__":
     print("\nReading in counts data from {}\n".format(args.counts))
     adata = sc.read(args.counts)
     # preprocess data and calculate metrics
-    recipe_fcc(adata, mito_names=args.mito_names)
+    recipe_dropkeeper(adata, mito_names=args.mito_names)
     # print set differences to console
     set_diff(adata, labels=args.labels, metrics=args.metrics)
     # generate plot of chosen metrics' distribution in two cell label populations
@@ -266,28 +292,29 @@ if __name__ == "__main__":
             args.output_dir, name
         )
     )
-    # print significant GEP usages to console
-    fig, sig, insig = cnmf_usage_test(adata, labels=args.labels)
-    # generate plot of significant GEP distributions
-    print(
-        "Saving significant NMF GEP distribution plots to {}/{}_sigGEPs.png".format(
-            args.output_dir, name
+    if args.cnmf:
+        # print significant GEP usages to console
+        fig, sig, insig = cnmf_usage_test(adata, labels=args.labels)
+        # generate plot of significant GEP distributions
+        print(
+            "Saving significant NMF GEP distribution plots to {}/{}_sigGEPs.png".format(
+                args.output_dir, name
+            )
         )
-    )
-    fig.savefig(
-        "{}/{}_sigGEPs.png".format(
-            args.output_dir, name
+        fig.savefig(
+            "{}/{}_sigGEPs.png".format(
+                args.output_dir, name
+            )
         )
-    )
-    # generate plot of significant GEP loadings
-    print(
-        "Saving significant NMF GEP loadings to {}/{}_sigspectra.png".format(
-            args.output_dir, name
+        # generate plot of significant GEP loadings
+        print(
+            "Saving significant NMF GEP loadings to {}/{}_sigspectra.png".format(
+                args.output_dir, name
+            )
         )
-    )
-    rank_genes(adata, indices=[int(i.split('_', 1)[1])-1 for i in sig], show=False)
-    plt.savefig(
-        "{}/{}_sigspectra.png".format(
-            args.output_dir, name
+        rank_genes(adata, indices=[int(i.split('_', 1)[1])-1 for i in sig], show=False)
+        plt.savefig(
+            "{}/{}_sigspectra.png".format(
+                args.output_dir, name
+            )
         )
-    )

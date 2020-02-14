@@ -3,6 +3,51 @@
 Automated QC classifier pipeline
 
 @author: C Heiser
+
+usage: qc_pipeline.py [-h] -c COUNTS [--obs-cols OBS_COLS [OBS_COLS ...]]
+                      [--directions DIRECTIONS [DIRECTIONS ...]]
+                      [--thresh-method THRESH_METHOD]
+                      [--mito-names MITO_NAMES] [--n-hvgs N_HVGS]
+                      [--seed SEED] [--output-dir [OUTPUT_DIR]]
+                      [--alphas [ALPHAS [ALPHAS ...]]] [--pos-frac POS_FRAC]
+                      [--neg-frac NEG_FRAC]
+                      {ridge,twostep}
+
+positional arguments:
+  {ridge,twostep}
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -c COUNTS, --counts COUNTS
+                        [all] Input (cell x gene) counts matrix as .h5ad or
+                        tab delimited text file
+  --obs-cols OBS_COLS [OBS_COLS ...]
+                        [all] Heuristics for thresholding. Several can be
+                        specified with '--obs-cols arcsinh_n_genes_by_counts
+                        pct_counts_ambient'
+  --directions DIRECTIONS [DIRECTIONS ...]
+                        [all] Direction of thresholding for each heuristic.
+                        Several can be specified with '--obs-cols above below'
+  --thresh-method THRESH_METHOD
+                        [all] Method used for automatic thresholding on
+                        heuristics. One of ['otsu','li','mean']
+  --mito-names MITO_NAMES
+                        [all] Substring or regex defining mitochondrial genes
+  --n-hvgs N_HVGS       [all] Number of highly variable genes for training
+                        model
+  --seed SEED           [all] Random state for cross validation [ridge] or
+                        sampling training set [twostep]
+  --output-dir [OUTPUT_DIR]
+                        [all] Output directory. Output will be placed in
+                        [output-dir]/[name]/...
+  --alphas [ALPHAS [ALPHAS ...]]
+                        [ridge] Alpha values for ridge regression model.
+                        Several can be specified with '--alphas 100 200 300
+                        400'
+  --pos-frac POS_FRAC   [twostep] Fraction of cells below threshold to sample
+                        for training set
+  --neg-frac NEG_FRAC   [twostep] Fraction of cells above threshold to sample
+                        for training set
 """
 import argparse
 import os, errno
@@ -10,7 +55,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scanpy as sc
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
-from sklearn.linear_model import RidgeClassifierCV
+from sklearn.linear_model import RidgeClassifier
+from sklearn.model_selection import KFold
 from sklearn.ensemble import RandomForestClassifier
 from PU_twostep import twoStep
 
@@ -28,6 +74,8 @@ def check_dir_exists(path):
 
 def recipe_dropkeeper(
     adata,
+    X_final="raw_counts",
+    calc_metrics=True,
     mito_names="^mt-|^MT-",
     n_ambient=10,
     target_sum=None,
@@ -38,6 +86,9 @@ def recipe_dropkeeper(
 
     Parameters:
         adata (AnnData.AnnData): object with raw counts data in .X
+        X_final (str): which normalization should be left in .X slot?
+            ("raw_counts","arcsinh_norm","norm_counts")
+        calc_metrics (bool): if False, do not calculate metrics in .obs/.var
         mito_names (str): substring encompassing mitochondrial gene names for
             calculation of mito expression
         n_ambient (int): number of ambient genes to call. top genes by cells.
@@ -58,32 +109,34 @@ def recipe_dropkeeper(
     # store raw counts before manipulation
     adata.layers["raw_counts"] = adata.X.copy()
 
-    # identify mitochondrial genes
-    adata.var["mito"] = adata.var_names.str.contains(mito_names)
-    # identify putative ambient genes by lowest dropout pct (top 10)
-    adata.var["ambient"] = adata.X.astype(bool).sum(axis=0) / adata.n_obs
-    print(
-        "Top {} ambient genes have dropout rates between {} and {} percent".format(
-            n_ambient,
-            round((1 - adata.var.ambient.nlargest(n=n_ambient).max()) * 100, 2),
-            round((1 - adata.var.ambient.nlargest(n=n_ambient).min()) * 100, 2),
+    if calc_metrics:
+        # identify mitochondrial genes
+        adata.var["mito"] = adata.var_names.str.contains(mito_names)
+        # identify putative ambient genes by lowest dropout pct (top 10)
+        adata.var["ambient"] = adata.X.astype(bool).sum(axis=0) / adata.n_obs
+        print(
+            "Top {} ambient genes have dropout rates between {} and {} percent".format(
+                n_ambient,
+                round((1 - adata.var.ambient.nlargest(n=n_ambient).max()) * 100, 2),
+                round((1 - adata.var.ambient.nlargest(n=n_ambient).min()) * 100, 2),
+            )
         )
-    )
-    adata.var["ambient"] = (
-        adata.var.ambient >= adata.var.ambient.nlargest(n=n_ambient).min()
-    )
-    # calculate standard qc .obs and .var
-    sc.pp.calculate_qc_metrics(
-        adata, qc_vars=["mito", "ambient"], inplace=True, percent_top=[10, 50, 100]
-    )
-    # other arcsinh-transformed metrics
-    adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
-    adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
+        adata.var["ambient"] = (
+            adata.var.ambient >= adata.var.ambient.nlargest(n=n_ambient).min()
+        )
+        # calculate standard qc .obs and .var
+        sc.pp.calculate_qc_metrics(
+            adata, qc_vars=["mito", "ambient"], inplace=True, percent_top=[10, 50, 100]
+        )
+        # other arcsinh-transformed metrics
+        adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
+        adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
 
     # log1p transform (adata.layers["log1p_norm"])
     sc.pp.normalize_total(adata, target_sum=target_sum, layers=None, layer_norm=None)
     adata.layers["norm_counts"] = adata.X.copy()  # save to .layers
     sc.pp.log1p(adata)
+    adata.layers["log1p_norm"] = adata.X.copy()  # save to .layers
 
     # HVGs
     if n_hvgs is not None:
@@ -94,6 +147,10 @@ def recipe_dropkeeper(
     # arcsinh-transform normalized counts to leave in .X
     adata.X = np.arcsinh(adata.layers["norm_counts"])
     sc.pp.scale(adata)  # scale genes for feeding into model
+    adata.layers["arcsinh_norm"] = adata.X.copy()  # save arcsinh scaled counts in .layers
+
+    # set .X as desired for downstream processing; default raw_counts
+    adata.X = adata.layers[X_final].copy()
 
 
 def auto_thresh_obs(
@@ -209,6 +266,80 @@ def filter_thresh_obs(
                 ] = 0
 
 
+def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, shuffle=True):
+    """
+    split anndata object into k folds for cross-validation.
+    Use n_hvgs from train set only, if desired, to remove bias toward test set.
+
+    Parameters:
+        adata (anndata.AnnData): object containing unfiltered scRNA-seq data
+            with .layers["log1p_norm"] and .layers["arcsinh_norm"]
+        label (str): column of .obs that has labels
+        n_splits (int): number of folds to split adata into
+        n_hvgs (int or None): number of HVGs to calculate using Seurat method
+            if None, do not calculate HVGs
+        seed (int): random state for k-fold picking
+        shuffle (bool): shuffle order of cells before splitting?
+
+    Returns:
+        splits (dict): keys are "data" and "labels" and values are numpy arrays
+            with X and y for each fold
+    """
+    kf = KFold(
+        n_splits=n_splits, shuffle=shuffle, random_state=seed
+    )  # generate KFold object for splitting data
+    splits = {
+        "train": {"data": [], "labels": []},
+        "test": {"data": [], "labels": []},
+    }  # initiate empty dictionary to dump matrix subsets into
+
+    a = adata.copy()  # copy anndata to not alter original
+
+    for train_i, test_i in kf.split(a.X):
+        # delineate training and testing sets
+        #tmp_train = sc.pp.highly_variable_genes(a[train_i,:], n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True, inplace=False)
+        #tmp_test = sc.pp.highly_variable_genes(a[test_i,:], n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True, inplace=False)
+        # perform preprocessing on training and test sets separately to ID HVGs
+        #recipe_dropkeeper(tmp_train, n_hvgs=n_hvgs, calc_metrics=False, target_sum=None)
+        #recipe_dropkeeper(tmp_test, n_hvgs=n_hvgs, calc_metrics=False, target_sum=None)
+        # put resulting normalized, scaled counts in dictionary
+        if n_hvgs is None:
+            # if no HVGs, train on all genes. NOTE: this slows computation considerably.
+            tmp_train = a[train_i,:].copy()
+            tmp_test = a[test_i,:].copy()
+            splits["train"]["data"].append(tmp_train.layers["arcsinh_norm"])
+            splits["test"]["data"].append(tmp_test.layers["arcsinh_norm"])
+        else:
+            # subset on HVGs for each train fold if desired
+            a.X = a.layers["log1p_norm"].copy()  # put log1p transformation in .X for HVG determination
+            tmp_train = a[train_i,:].copy()
+            sc.pp.highly_variable_genes(tmp_train, n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True)
+            tmp_test = a[test_i,:].copy()
+            sc.pp.highly_variable_genes(tmp_test, n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True)
+            splits["train"]["data"].append(tmp_train.layers["arcsinh_norm"])
+            splits["test"]["data"].append(tmp_test.layers["arcsinh_norm"])
+        # put resulting labels in dictionary
+        splits["train"]["labels"].append(tmp_train.obs[label].copy(deep=True))
+        splits["test"]["labels"].append(tmp_test.obs[label].copy(deep=True))
+
+    return splits
+
+
+def validator(splits, classifier):
+    """loops through kfold_split object and calculates accuracy scores for given classifier"""
+    scores = []
+    for split in range(0, len(splits["train"]["data"])):
+        classifier.fit(splits["train"]["data"][split], splits["train"]["labels"][split])
+        #prediction = classifier.predict(splits["test"]["data"][split])
+        #conf_matrix = confusion_matrix(splits["test"]["labels"][split], prediction)
+        score = classifier.score(
+            splits["test"]["data"][split], splits["test"]["labels"][split]
+        )
+        #print("\nSplit {}: {}\n{}".format(split, score, conf_matrix))
+        scores.append(score)
+    return np.mean(scores)
+
+
 def ridge_pipe(
     adata,
     mito_names="^mt-|^MT-",
@@ -217,6 +348,8 @@ def ridge_pipe(
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
     alphas=(100, 200, 300, 400, 500),
+    n_splits=5,
+    seed=18,
 ):
     """
     generate ridge regression model of cell quality
@@ -232,7 +365,10 @@ def ridge_pipe(
         metrics (list of str): name of column(s) to threshold from adata.obs
         directions (list of str): 'below' or 'above', indicating which
             direction to keep (label=1)
-        alphas (tuple of int): alpha values to test using RidgeClassifierCV
+        alphas (tuple of int): alpha values to test using RidgeClassifier
+            with n-fold cross validation
+        n_splits (int): number of splits for n-fold cross validation
+        seed (int): random state for n-fold cross validation
 
     Returns:
         adata_thresh (dict): dictionary of automated thresholds on heuristics
@@ -241,20 +377,23 @@ def ridge_pipe(
         updated adata inplace to include 'train', 'dropkeeper_score', and
             'dropkeeper_label' columns in .obs
     """
-    # 1) preprocess counts and calculate required QC metrics
+    # 0) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
+    #a = adata.copy()  # copy AnnData object to avoid manipulating original
     recipe_dropkeeper(
         adata,
+        X_final="raw_counts",
+        calc_metrics=True,
         mito_names=mito_names,
         n_hvgs=n_hvgs,
         target_sum=None,
     )
 
-    # 2) threshold chosen heuristics using automated method
+    # 1) threshold chosen heuristics using automated method
     print("Thresholding on heuristics for training labels: {}".format(metrics))
     adata_thresh = auto_thresh_obs(adata, method=thresh_method, obs_cols=metrics)
 
-    # 3) create labels from combination of thresholds
+    # 2) create labels from combination of thresholds
     filter_thresh_obs(
         adata,
         adata_thresh,
@@ -264,18 +403,28 @@ def ridge_pipe(
         name="train",
     )
 
-    # 4) train ridge regression classifier with cross validation
+    # 3) cross-validation to choose alpha value
+    print("Training ridge classifier by {}-fold cross validation with alpha values: {}".format(n_splits, alphas))
+    splits = kfold_split_adata(adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True)
+    cv_scores = {"alpha":[], "score":[]}
+    for alpha in alphas:
+        rc = RidgeClassifier(alpha=alpha)
+        cv_scores["alpha"].append(alpha)
+        cv_scores["score"].append(validator(splits, rc))
+
+    alpha_ = cv_scores["alpha"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose alpha value
+    print("Chosen alpha value: {}".format(alpha_))
+
+    # 4) train final ridge regression classifier
     y = adata.obs["train"].copy(deep=True)  # training labels defined above
     if n_hvgs is None:
         # if no HVGs, train on all genes. NOTE: this slows computation considerably.
-        X = adata.X
+        X = adata.layers["arcsinh_norm"].copy()
     else:
         # use HVGs if provided
-        X = adata.X[:, adata.var["highly_variable"] == True]
-    print("Training ridge classifier with alpha values: {}".format(alphas))
-    rc = RidgeClassifierCV(alphas=alphas, store_cv_values=True)
+        X = adata.layers["arcsinh_norm"][:, adata.var["highly_variable"] == True].copy()
+    rc = RidgeClassifier(alpha=alpha_)
     rc.fit(X, y)
-    print("Chosen alpha value: {}".format(rc.alpha_))
 
     # 5) use ridge model to assign scores and labels
     print("Assigning scores and labels from model")
@@ -283,7 +432,7 @@ def ridge_pipe(
     adata.obs["dropkeeper_label"] = rc.predict(X)
 
     print("Done!")
-    return adata_thresh, rc
+    return adata_thresh, rc, alpha_
 
 
 def sampling_probabilities(
@@ -540,16 +689,9 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument(
-        "--output-dir",
-        type=str,
-        help="[all] Output directory. Output will be placed in [output-dir]/[name]/...",
-        nargs="?",
-        default=".",
-    )
-    parser.add_argument(
         "--obs-cols",
         type=str,
-        help="[all] Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_mito'",
+        help="[all] Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_ambient'",
         nargs="+",
         default=["arcsinh_n_genes_by_counts", "pct_counts_ambient"],
     )
@@ -578,6 +720,19 @@ if __name__ == "__main__":
         help="[all] Number of highly variable genes for training model",
         default=2000,
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="[all] Random state for cross validation [ridge] or sampling training set [twostep]",
+        default=18,
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="[all] Output directory. Output will be placed in [output-dir]/[name]/...",
+        nargs="?",
+        default=".",
+    )
 
     parser.add_argument(
         "--alphas",
@@ -599,12 +754,6 @@ if __name__ == "__main__":
         help="[twostep] Fraction of cells above threshold to sample for training set",
         default=0.3,
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        help="[twostep] Random state for sampling training set",
-        default=18,
-    )
 
     args = parser.parse_args()
 
@@ -619,7 +768,7 @@ if __name__ == "__main__":
     name = os.path.splitext(os.path.basename(args.counts))[0]
 
     if args.command == "ridge":
-        thresholds, ridge_model = ridge_pipe(
+        thresholds, ridge_model, alpha_ = ridge_pipe(
             tmp,
             mito_names=args.mito_names,
             n_hvgs=args.n_hvgs,
@@ -627,6 +776,7 @@ if __name__ == "__main__":
             metrics=args.obs_cols,
             directions=args.directions,
             alphas=args.alphas,
+            seed=args.seed,
         )
         # generate plot of chosen training thresholds on heuristics
         print(
@@ -656,7 +806,7 @@ if __name__ == "__main__":
             "obs_cols": args.obs_cols,
             "directions": args.directions,
             "alphas": args.alphas,
-            "chosen_alpha": ridge_model.alpha_,
+            "chosen_alpha": alpha_,
             "mito_names": args.mito_names,
             "n_hvgs": args.n_hvgs,
             "thresh_method": args.thresh_method,
