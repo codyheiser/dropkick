@@ -13,7 +13,6 @@ from skimage.filters import threshold_li, threshold_otsu, threshold_mean
 from sklearn.linear_model import RidgeClassifierCV
 from sklearn.ensemble import RandomForestClassifier
 from PU_twostep import twoStep
-from QC import reorder_adata, arcsinh_norm, gf_icf, recipe_fcc
 
 
 def check_dir_exists(path):
@@ -25,6 +24,76 @@ def check_dir_exists(path):
     except OSError as exception:
         if exception.errno != errno.EEXIST:
             raise
+
+
+def recipe_dropkeeper(
+    adata,
+    mito_names="^mt-|^MT-",
+    n_ambient=10,
+    target_sum=None,
+    n_hvgs=2000,
+):
+    """
+    scanpy preprocessing recipe
+
+    Parameters:
+        adata (AnnData.AnnData): object with raw counts data in .X
+        mito_names (str): substring encompassing mitochondrial gene names for
+            calculation of mito expression
+        n_ambient (int): number of ambient genes to call. top genes by cells.
+        target_sum (int): total sum of counts for each cell prior to arcsinh 
+            and log1p transformations; default 1e6 for TPM
+        n_hvgs (int or None): number of HVGs to calculate using Seurat method
+            if None, do not calculate HVGs
+
+    Returns:
+        AnnData.AnnData: adata is edited in place to include:
+        - useful .obs and .var columns
+            ("total_counts", "pct_counts_mito", "n_genes_by_counts", etc.)
+        - raw counts (adata.layers["raw_counts"])
+        - normalized counts (adata.layers["norm_counts"])
+        - arcsinh transformation of normalized counts (adata.X)
+        - highly variable genes if desired (adata.var["highly_variable"])
+    """
+    # store raw counts before manipulation
+    adata.layers["raw_counts"] = adata.X.copy()
+
+    # identify mitochondrial genes
+    adata.var["mito"] = adata.var_names.str.contains(mito_names)
+    # identify putative ambient genes by lowest dropout pct (top 10)
+    adata.var["ambient"] = adata.X.astype(bool).sum(axis=0) / adata.n_obs
+    print(
+        "Top {} ambient genes have dropout rates between {} and {} percent".format(
+            n_ambient,
+            round((1 - adata.var.ambient.nlargest(n=n_ambient).max()) * 100, 2),
+            round((1 - adata.var.ambient.nlargest(n=n_ambient).min()) * 100, 2),
+        )
+    )
+    adata.var["ambient"] = (
+        adata.var.ambient >= adata.var.ambient.nlargest(n=n_ambient).min()
+    )
+    # calculate standard qc .obs and .var
+    sc.pp.calculate_qc_metrics(
+        adata, qc_vars=["mito", "ambient"], inplace=True, percent_top=[10, 50, 100]
+    )
+    # other arcsinh-transformed metrics
+    adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
+    adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
+
+    # log1p transform (adata.layers["log1p_norm"])
+    sc.pp.normalize_total(adata, target_sum=target_sum, layers=None, layer_norm=None)
+    adata.layers["norm_counts"] = adata.X.copy()  # save to .layers
+    sc.pp.log1p(adata)
+
+    # HVGs
+    if n_hvgs is not None:
+        sc.pp.highly_variable_genes(
+            adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat"
+        )
+
+    # arcsinh-transform normalized counts to leave in .X
+    adata.X = np.arcsinh(adata.layers["norm_counts"])
+    sc.pp.scale(adata)  # scale genes for feeding into model
 
 
 def auto_thresh_obs(
@@ -174,9 +243,8 @@ def ridge_pipe(
     """
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
-    recipe_fcc(
+    recipe_dropkeeper(
         adata,
-        X_final="arcsinh_norm",
         mito_names=mito_names,
         n_hvgs=n_hvgs,
         target_sum=None,
@@ -356,9 +424,8 @@ def twostep_pipe(
     """
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
-    recipe_fcc(
+    recipe_dropkeeper(
         adata,
-        X_final="arcsinh_norm",
         mito_names=mito_names,
         n_hvgs=n_hvgs,
         target_sum=None,
