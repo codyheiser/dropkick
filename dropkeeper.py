@@ -55,10 +55,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scanpy as sc
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
-from sklearn.linear_model import RidgeClassifier
-from sklearn.model_selection import KFold
+from sklearn.linear_model import RidgeClassifier, SGDClassifier
+from sklearn.model_selection import KFold, GridSearchCV
 from sklearn.ensemble import RandomForestClassifier
 from PU_twostep import twoStep
+from progressbar import ProgressBar
+pbar = ProgressBar()
 
 
 def check_dir_exists(path):
@@ -285,6 +287,7 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
         splits (dict): keys are "data" and "labels" and values are numpy arrays
             with X and y for each fold
     """
+    print("Splitting data into {} folds for cross validation and feature-selecting on training sets".format(n_splits), end="")
     kf = KFold(
         n_splits=n_splits, shuffle=shuffle, random_state=seed
     )  # generate KFold object for splitting data
@@ -296,13 +299,6 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
     a = adata.copy()  # copy anndata to not alter original
 
     for train_i, test_i in kf.split(a.X):
-        # delineate training and testing sets
-        #tmp_train = sc.pp.highly_variable_genes(a[train_i,:], n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True, inplace=False)
-        #tmp_test = sc.pp.highly_variable_genes(a[test_i,:], n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True, inplace=False)
-        # perform preprocessing on training and test sets separately to ID HVGs
-        #recipe_dropkeeper(tmp_train, n_hvgs=n_hvgs, calc_metrics=False, target_sum=None)
-        #recipe_dropkeeper(tmp_test, n_hvgs=n_hvgs, calc_metrics=False, target_sum=None)
-        # put resulting normalized, scaled counts in dictionary
         if n_hvgs is None:
             # if no HVGs, train on all genes. NOTE: this slows computation considerably.
             tmp_train = a[train_i,:].copy()
@@ -321,7 +317,9 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
         # put resulting labels in dictionary
         splits["train"]["labels"].append(tmp_train.obs[label].copy(deep=True))
         splits["test"]["labels"].append(tmp_test.obs[label].copy(deep=True))
+        print(" .", end="")
 
+    print("")
     return splits
 
 
@@ -330,12 +328,9 @@ def validator(splits, classifier):
     scores = []
     for split in range(0, len(splits["train"]["data"])):
         classifier.fit(splits["train"]["data"][split], splits["train"]["labels"][split])
-        #prediction = classifier.predict(splits["test"]["data"][split])
-        #conf_matrix = confusion_matrix(splits["test"]["labels"][split], prediction)
         score = classifier.score(
             splits["test"]["data"][split], splits["test"]["labels"][split]
         )
-        #print("\nSplit {}: {}\n{}".format(split, score, conf_matrix))
         scores.append(score)
     return np.mean(scores)
 
@@ -404,16 +399,19 @@ def ridge_pipe(
     )
 
     # 3) cross-validation to choose alpha value
-    print("Training ridge classifier by {}-fold cross validation with alpha values: {}".format(n_splits, alphas))
     splits = kfold_split_adata(adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True)
-    cv_scores = {"alpha":[], "score":[]}
-    for alpha in alphas:
-        rc = RidgeClassifier(alpha=alpha)
-        cv_scores["alpha"].append(alpha)
-        cv_scores["score"].append(validator(splits, rc))
+    print("Training classifier by {}-fold cross validation with alpha values: {}".format(n_splits, alphas))
+    cv_scores = {"alpha":[], "l1_ratio":[], "score":[]}
+    for alpha in pbar(alphas):
+        for l1_ratio in [0.1,0.3,0.5,0.7,0.9]:
+            rc = SGDClassifier(loss="hinge", penalty="elasticnet", alpha=alpha, l1_ratio=l1_ratio)
+            cv_scores["alpha"].append(alpha)
+            cv_scores["l1_ratio"].append(l1_ratio)
+            cv_scores["score"].append(validator(splits, rc))
 
     alpha_ = cv_scores["alpha"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose alpha value
-    print("Chosen alpha value: {}".format(alpha_))
+    alpha_ = cv_scores["l1_ratio"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose l1 ratio
+    print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
 
     # 4) train final ridge regression classifier
     y = adata.obs["train"].copy(deep=True)  # training labels defined above
@@ -423,7 +421,7 @@ def ridge_pipe(
     else:
         # use HVGs if provided
         X = adata.layers["arcsinh_norm"][:, adata.var["highly_variable"] == True].copy()
-    rc = RidgeClassifier(alpha=alpha_)
+    rc = SGDClassifier(loss="hinge", penalty="elasticnet", alpha=alpha_, l1_ratio=l1_ratio_)
     rc.fit(X, y)
 
     # 5) use ridge model to assign scores and labels
@@ -432,7 +430,7 @@ def ridge_pipe(
     adata.obs["dropkeeper_label"] = rc.predict(X)
 
     print("Done!")
-    return adata_thresh, rc, alpha_
+    return adata_thresh, rc, alpha_, l1_ratio
 
 
 def sampling_probabilities(
@@ -768,7 +766,7 @@ if __name__ == "__main__":
     name = os.path.splitext(os.path.basename(args.counts))[0]
 
     if args.command == "ridge":
-        thresholds, ridge_model, alpha_ = ridge_pipe(
+        thresholds, ridge_model, alpha_, l1_ratio_ = ridge_pipe(
             tmp,
             mito_names=args.mito_names,
             n_hvgs=args.n_hvgs,
@@ -807,6 +805,7 @@ if __name__ == "__main__":
             "directions": args.directions,
             "alphas": args.alphas,
             "chosen_alpha": alpha_,
+            "chosen_l1_ratio": l1_ratio_,
             "mito_names": args.mito_names,
             "n_hvgs": args.n_hvgs,
             "thresh_method": args.thresh_method,
