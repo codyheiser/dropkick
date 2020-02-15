@@ -33,7 +33,7 @@ import scanpy as sc
 import seaborn as sns
 from matplotlib import gridspec
 from scipy.stats import mannwhitneyu
-from qc_pipeline import recipe_dropkeeper
+from dropkeeper import recipe_dropkeeper
 
 
 def set_diff(adata, labels, metrics=None):

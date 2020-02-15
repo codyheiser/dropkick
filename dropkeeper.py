@@ -327,7 +327,7 @@ def validator(splits, classifier):
     """loops through kfold_split object and calculates accuracy scores for given classifier"""
     scores = []
     for split in range(0, len(splits["train"]["data"])):
-        classifier.fit(splits["train"]["data"][split], splits["train"]["labels"][split])
+        classifier.partial_fit(splits["train"]["data"][split], splits["train"]["labels"][split], classes=[0,1])
         score = classifier.score(
             splits["test"]["data"][split], splits["test"]["labels"][split]
         )
@@ -402,15 +402,15 @@ def ridge_pipe(
     splits = kfold_split_adata(adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True)
     print("Training classifier by {}-fold cross validation with alpha values: {}".format(n_splits, alphas))
     cv_scores = {"alpha":[], "l1_ratio":[], "score":[]}
-    for alpha in pbar(alphas):
-        for l1_ratio in [0.1,0.3,0.5,0.7,0.9]:
+    for l1_ratio in pbar([0.1,0.3,0.5,0.7,0.9]):
+        for alpha in alphas:
             rc = SGDClassifier(loss="hinge", penalty="elasticnet", alpha=alpha, l1_ratio=l1_ratio)
             cv_scores["alpha"].append(alpha)
             cv_scores["l1_ratio"].append(l1_ratio)
             cv_scores["score"].append(validator(splits, rc))
 
     alpha_ = cv_scores["alpha"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose alpha value
-    alpha_ = cv_scores["l1_ratio"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose l1 ratio
+    l1_ratio_ = cv_scores["l1_ratio"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose l1 ratio
     print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
 
     # 4) train final ridge regression classifier
