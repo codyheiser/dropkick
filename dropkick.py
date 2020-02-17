@@ -4,7 +4,56 @@ Automated QC classifier pipeline
 
 @author: C Heiser
 
+usage: dropkick.py [-h] -c COUNTS [--obs-cols OBS_COLS [OBS_COLS ...]]
+                   [--directions DIRECTIONS [DIRECTIONS ...]]
+                   [--thresh-method THRESH_METHOD] [--mito-names MITO_NAMES]
+                   [--n-hvgs N_HVGS] [--seed SEED] [--output-dir [OUTPUT_DIR]]
+                   [--alphas [ALPHAS [ALPHAS ...]]]
+                   [--l1-ratios [L1_RATIOS [L1_RATIOS ...]]]
+                   [--n-splits N_SPLITS] [--pos-frac POS_FRAC]
+                   [--neg-frac NEG_FRAC]
+                   {regression,twostep}
 
+positional arguments:
+  {regression,twostep}
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -c COUNTS, --counts COUNTS
+                        [all] Input (cell x gene) counts matrix as .h5ad or
+                        tab delimited text file
+  --obs-cols OBS_COLS [OBS_COLS ...]
+                        [all] Heuristics for thresholding. Several can be
+                        specified with '--obs-cols arcsinh_n_genes_by_counts
+                        pct_counts_ambient'
+  --directions DIRECTIONS [DIRECTIONS ...]
+                        [all] Direction of thresholding for each heuristic.
+                        Several can be specified with '--obs-cols above below'
+  --thresh-method THRESH_METHOD
+                        [all] Method used for automatic thresholding on
+                        heuristics. One of ['otsu','li','mean']
+  --mito-names MITO_NAMES
+                        [all] Substring or regex defining mitochondrial genes
+  --n-hvgs N_HVGS       [all] Number of highly variable genes for training
+                        model
+  --seed SEED           [all] Random state for cross validation [regression]
+                        or sampling training set [twostep]
+  --output-dir [OUTPUT_DIR]
+                        [all] Output directory. Output will be placed in
+                        [output-dir]/[name]...
+  --alphas [ALPHAS [ALPHAS ...]]
+                        [regression] Alpha values for ridge regression model.
+                        Several can be specified with '--alphas 100 200 300
+                        400'
+  --l1-ratios [L1_RATIOS [L1_RATIOS ...]]
+                        [regression] Ratio between l1 and l2 regularization
+                        for regression model. Several can be specified with '
+                        --l1-ratios 0.1 0.2 0.3 0.4 0.5'
+  --n-splits N_SPLITS   [regression] Number of splits for cross validation
+  --pos-frac POS_FRAC   [twostep] Fraction of cells below threshold to sample
+                        for training set
+  --neg-frac NEG_FRAC   [twostep] Fraction of cells above threshold to sample
+                        for training set
 """
 import argparse
 import itertools
@@ -18,6 +67,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from PU_twostep import twoStep
 from progressbar import ProgressBar
+
 pbar = ProgressBar()
 
 
@@ -90,7 +140,9 @@ def recipe_dropkick(
         )
         # other arcsinh-transformed metrics
         adata.obs["arcsinh_total_counts"] = np.arcsinh(adata.obs["total_counts"])
-        adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(adata.obs["n_genes_by_counts"])
+        adata.obs["arcsinh_n_genes_by_counts"] = np.arcsinh(
+            adata.obs["n_genes_by_counts"]
+        )
 
     # log1p transform (adata.layers["log1p_norm"])
     sc.pp.normalize_total(adata, target_sum=target_sum, layers=None, layer_norm=None)
@@ -107,7 +159,9 @@ def recipe_dropkick(
     # arcsinh-transform normalized counts to leave in .X
     adata.X = np.arcsinh(adata.layers["norm_counts"])
     sc.pp.scale(adata)  # scale genes for feeding into model
-    adata.layers["arcsinh_norm"] = adata.X.copy()  # save arcsinh scaled counts in .layers
+    adata.layers[
+        "arcsinh_norm"
+    ] = adata.X.copy()  # save arcsinh scaled counts in .layers
 
     # set .X as desired for downstream processing; default raw_counts
     adata.X = adata.layers[X_final].copy()
@@ -226,7 +280,9 @@ def filter_thresh_obs(
                 ] = 0
 
 
-def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, shuffle=True):
+def kfold_split_adata(
+    adata, label="train", n_splits=5, n_hvgs=2000, seed=None, shuffle=True
+):
     """
     split anndata object into k folds for cross-validation.
     Use n_hvgs from train set only, if desired, to remove bias toward test set.
@@ -245,7 +301,12 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
         splits (dict): keys are "data" and "labels" and values are numpy arrays
             with X and y for each fold
     """
-    print("Splitting data into {} folds for cross validation and feature-selecting on training sets".format(n_splits), end="")
+    print(
+        "Splitting data into {} folds for cross validation and feature-selecting on training sets".format(
+            n_splits
+        ),
+        end="",
+    )
     kf = StratifiedKFold(
         n_splits=n_splits, shuffle=shuffle, random_state=seed
     )  # generate KFold object for splitting data
@@ -259,17 +320,23 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
     for train_i, test_i in kf.split(X=a.X, y=a.obs[label]):
         if n_hvgs is None:
             # if no HVGs, train on all genes. NOTE: this slows computation considerably.
-            tmp_train = a[train_i,:].copy()
-            tmp_test = a[test_i,:].copy()
+            tmp_train = a[train_i, :].copy()
+            tmp_test = a[test_i, :].copy()
             splits["train"]["data"].append(tmp_train.layers["arcsinh_norm"])
             splits["test"]["data"].append(tmp_test.layers["arcsinh_norm"])
         else:
             # subset on HVGs for each train fold if desired
-            a.X = a.layers["log1p_norm"].copy()  # put log1p transformation in .X for HVG determination
-            tmp_train = a[train_i,:].copy()
-            sc.pp.highly_variable_genes(tmp_train, n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True)
-            tmp_test = a[test_i,:].copy()
-            sc.pp.highly_variable_genes(tmp_test, n_top_genes=n_hvgs, n_bins=20, flavor='seurat', subset=True)
+            a.X = a.layers[
+                "log1p_norm"
+            ].copy()  # put log1p transformation in .X for HVG determination
+            tmp_train = a[train_i, :].copy()
+            sc.pp.highly_variable_genes(
+                tmp_train, n_top_genes=n_hvgs, n_bins=20, flavor="seurat", subset=True
+            )
+            tmp_test = a[test_i, :].copy()
+            sc.pp.highly_variable_genes(
+                tmp_test, n_top_genes=n_hvgs, n_bins=20, flavor="seurat", subset=True
+            )
             splits["train"]["data"].append(tmp_train.layers["arcsinh_norm"])
             splits["test"]["data"].append(tmp_test.layers["arcsinh_norm"])
         # put resulting labels in dictionary
@@ -333,7 +400,7 @@ def regression_pipe(
     """
     # 0) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
-    #a = adata.copy()  # copy AnnData object to avoid manipulating original
+    # a = adata.copy()  # copy AnnData object to avoid manipulating original
     recipe_dropkick(
         adata,
         X_final="raw_counts",
@@ -358,18 +425,41 @@ def regression_pipe(
     )
 
     # 3) cross-validation to choose alpha and l1_ratio values
-    splits = kfold_split_adata(adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True)
-    print("Training classifier by {}-fold cross validation with alpha values: {} and regularization ratios: {}".format(n_splits, alphas, l1_ratios))
-    cv_scores = {"alpha":[], "l1_ratio":[], "score":[]}
-    params_list = list(itertools.chain.from_iterable([[x for x in zip(np.repeat(l1_ratios[y], len(alphas)), alphas)] for y in range(len(l1_ratios))]))
+    splits = kfold_split_adata(
+        adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True
+    )
+    print(
+        "Training classifier by {}-fold cross validation with alpha values: {} and regularization ratios: {}".format(
+            n_splits, alphas, l1_ratios
+        )
+    )
+    cv_scores = {"alpha": [], "l1_ratio": [], "score": []}
+    params_list = list(
+        itertools.chain.from_iterable(
+            [
+                [x for x in zip(np.repeat(l1_ratios[y], len(alphas)), alphas)]
+                for y in range(len(l1_ratios))
+            ]
+        )
+    )
     for params in pbar(params_list):
-        rc = LogisticRegression(penalty="elasticnet", C=params[1], l1_ratio=params[0], solver="saga", random_state=seed)
+        rc = LogisticRegression(
+            penalty="elasticnet",
+            C=params[1],
+            l1_ratio=params[0],
+            solver="saga",
+            random_state=seed,
+        )
         cv_scores["l1_ratio"].append(params[0])
         cv_scores["alpha"].append(params[1])
         cv_scores["score"].append(validator(splits, rc))
     # determine optimal alpha and l1_ratio values by accuracy score
-    alpha_ = cv_scores["alpha"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose alpha value
-    l1_ratio_ = cv_scores["l1_ratio"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose l1 ratio
+    alpha_ = cv_scores["alpha"][
+        cv_scores["score"].index(max(cv_scores["score"]))
+    ]  # choose alpha value
+    l1_ratio_ = cv_scores["l1_ratio"][
+        cv_scores["score"].index(max(cv_scores["score"]))
+    ]  # choose l1 ratio
     print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
 
     # 4) train final regression classifier
@@ -380,12 +470,18 @@ def regression_pipe(
     else:
         # use HVGs if provided
         X = adata.layers["arcsinh_norm"][:, adata.var["highly_variable"] == True].copy()
-    rc = LogisticRegression(penalty="elasticnet", C=alpha_, l1_ratio=l1_ratio_, solver="saga", random_state=seed)
+    rc = LogisticRegression(
+        penalty="elasticnet",
+        C=alpha_,
+        l1_ratio=l1_ratio_,
+        solver="saga",
+        random_state=seed,
+    )
     rc.fit(X, y)
 
     # 5) use ridge model to assign scores and labels
     print("Assigning scores and labels from model")
-    adata.obs["dropkick_score"] = rc.predict_proba(X)[:,1]
+    adata.obs["dropkick_score"] = rc.predict_proba(X)[:, 1]
     adata.obs["dropkick_label"] = rc.predict(X)
 
     print("Done!")
@@ -531,10 +627,7 @@ def twostep_pipe(
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
     recipe_dropkick(
-        adata,
-        mito_names=mito_names,
-        n_hvgs=n_hvgs,
-        target_sum=None,
+        adata, mito_names=mito_names, n_hvgs=n_hvgs, target_sum=None,
     )
 
     # 2) threshold chosen heuristics using automated method
@@ -758,9 +851,7 @@ if __name__ == "__main__":
         )
         thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
         plt.savefig(
-            "{}/{}_{}_thresholds.png".format(
-                args.output_dir, name, args.thresh_method
-            )
+            "{}/{}_{}_thresholds.png".format(args.output_dir, name, args.thresh_method)
         )
         # save new labels
         print(
@@ -812,9 +903,7 @@ if __name__ == "__main__":
         )
         thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
         plt.savefig(
-            "{}/{}_{}_thresholds.png".format(
-                args.output_dir, name, args.thresh_method
-            )
+            "{}/{}_{}_thresholds.png".format(args.output_dir, name, args.thresh_method)
         )
         # save new labels
         print(

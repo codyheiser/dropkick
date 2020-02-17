@@ -48,25 +48,55 @@ def set_diff(adata, labels, metrics=None):
     Returns:
         prints results
     """
-    if len(labels)!=2:
-        raise ValueError(
-                "Please provide exactly two cell labels."
+    if len(labels) != 2:
+        raise ValueError("Please provide exactly two cell labels.")
+    unique_0 = len(
+        set(adata.obs_names[adata.obs[labels[0]] == 1]).difference(
+            set(adata.obs_names[adata.obs[labels[1]] == 1])
+        )
+    )
+    unique_1 = len(
+        set(adata.obs_names[adata.obs[labels[1]] == 1]).difference(
+            set(adata.obs_names[adata.obs[labels[0]] == 1])
+        )
+    )
+    print(
+        "{} cells in {} - {} unique".format(
+            adata.obs[labels[0]].sum(), labels[0], unique_0
+        )
+    )
+    if metrics is not None:
+        for m in metrics:
+            print(
+                "\t{}: {:0.3}".format(
+                    m, round(adata.obs.loc[adata.obs[labels[0]] == 1, m].mean(), 3)
+                ),
+                end=" ",
             )
-    unique_0 = len(set(adata.obs_names[adata.obs[labels[0]]==1]).difference(set(adata.obs_names[adata.obs[labels[1]]==1])))
-    unique_1 = len(set(adata.obs_names[adata.obs[labels[1]]==1]).difference(set(adata.obs_names[adata.obs[labels[0]]==1])))
-    print("{} cells in {} - {} unique".format(adata.obs[labels[0]].sum(), labels[0], unique_0))
-    if metrics is not None:
-        for m in metrics:
-            print("\t{}: {:0.3}".format(m, round(adata.obs.loc[adata.obs[labels[0]]==1, m].mean(),3)), end=" ")
         print("\n")
-    print("{} cells in {} - {} unique".format(adata.obs[labels[1]].sum(), labels[1], unique_1))
+    print(
+        "{} cells in {} - {} unique".format(
+            adata.obs[labels[1]].sum(), labels[1], unique_1
+        )
+    )
     if metrics is not None:
         for m in metrics:
-            print("\t{}: {:0.3}".format(m, round(adata.obs.loc[adata.obs[labels[1]]==1, m].mean(),3)), end=" ")
+            print(
+                "\t{}: {:0.3}".format(
+                    m, round(adata.obs.loc[adata.obs[labels[1]] == 1, m].mean(), 3)
+                ),
+                end=" ",
+            )
         print("\n")
 
 
-def plot_set_obs(adata, labels, metrics=["arcsinh_total_counts","arcsinh_n_genes_by_counts","pct_counts_mito"], bins=40, show=True):
+def plot_set_obs(
+    adata,
+    labels,
+    metrics=["arcsinh_total_counts", "arcsinh_n_genes_by_counts", "pct_counts_mito"],
+    bins=40,
+    show=True,
+):
     """
     plot distribution of metrics in adata.obs for different labeled cell populations
 
@@ -83,10 +113,40 @@ def plot_set_obs(adata, labels, metrics=["arcsinh_total_counts","arcsinh_n_genes
     fig, axes = plt.subplots(ncols=len(metrics), nrows=1, figsize=(len(metrics) * 4, 4))
     axes[0].set_ylabel("cells")
     for i in range(len(metrics)):
-        axes[i].hist(adata.obs.loc[adata.obs_names[adata.obs[labels[0]]==1],metrics[i]], alpha=0.5, label=labels[0], bins=bins)
-        axes[i].hist(adata.obs.loc[adata.obs_names[adata.obs[labels[1]]==1],metrics[i]], alpha=0.5, label=labels[1], bins=bins)
-        axes[i].hist(adata.obs.loc[set(adata.obs_names[adata.obs[labels[0]]==1]).difference(set(adata.obs_names[adata.obs[labels[1]]==1])),metrics[i]], alpha=0.5, label="{} unique".format(labels[0]), bins=bins)
-        axes[i].hist(adata.obs.loc[set(adata.obs_names[adata.obs[labels[1]]==1]).difference(set(adata.obs_names[adata.obs[labels[0]]==1])),metrics[i]], alpha=0.5, label="{} unique".format(labels[1]), bins=bins)
+        axes[i].hist(
+            adata.obs.loc[adata.obs_names[adata.obs[labels[0]] == 1], metrics[i]],
+            alpha=0.5,
+            label=labels[0],
+            bins=bins,
+        )
+        axes[i].hist(
+            adata.obs.loc[adata.obs_names[adata.obs[labels[1]] == 1], metrics[i]],
+            alpha=0.5,
+            label=labels[1],
+            bins=bins,
+        )
+        axes[i].hist(
+            adata.obs.loc[
+                set(adata.obs_names[adata.obs[labels[0]] == 1]).difference(
+                    set(adata.obs_names[adata.obs[labels[1]] == 1])
+                ),
+                metrics[i],
+            ],
+            alpha=0.5,
+            label="{} unique".format(labels[0]),
+            bins=bins,
+        )
+        axes[i].hist(
+            adata.obs.loc[
+                set(adata.obs_names[adata.obs[labels[1]] == 1]).difference(
+                    set(adata.obs_names[adata.obs[labels[0]] == 1])
+                ),
+                metrics[i],
+            ],
+            alpha=0.5,
+            label="{} unique".format(labels[1]),
+            bins=bins,
+        )
         axes[i].set_title(metrics[i])
     axes[i].legend()
     fig.tight_layout()
@@ -109,15 +169,23 @@ def cnmf_usage_test(adata, labels):
         prints results
     """
     # generate obs column with comparison of two labels for visualization
-    adata.obs['compare'] = 'same'
-    adata.obs.loc[(adata.obs[labels[0]]==1) & (adata.obs[labels[1]]==0), 'compare'] = labels[0]
-    adata.obs.loc[(adata.obs[labels[1]]==1) & (adata.obs[labels[0]]==0), 'compare'] = labels[1]
+    adata.obs["compare"] = "same"
+    adata.obs.loc[
+        (adata.obs[labels[0]] == 1) & (adata.obs[labels[1]] == 0), "compare"
+    ] = labels[0]
+    adata.obs.loc[
+        (adata.obs[labels[1]] == 1) & (adata.obs[labels[0]] == 0), "compare"
+    ] = labels[1]
     # determine Mann-Whitney p-values
     sig = []
     p = []
     insig = []
     for gep in list(adata.obs.columns[adata.obs.columns.str.contains("usage_")]):
-        u = mannwhitneyu(adata.obs.loc[adata.obs['compare']==labels[0],gep], adata.obs.loc[adata.obs['compare']==labels[1],gep], alternative='two-sided')
+        u = mannwhitneyu(
+            adata.obs.loc[adata.obs["compare"] == labels[0], gep],
+            adata.obs.loc[adata.obs["compare"] == labels[1], gep],
+            alternative="two-sided",
+        )
         if u.pvalue <= 0.05:
             print("Significant result for {}: p-value = {:0.3e}".format(gep, u.pvalue))
             sig.append(gep)
@@ -127,8 +195,10 @@ def cnmf_usage_test(adata, labels):
     # plot violins of significant results
     fig, axes = plt.subplots(ncols=len(sig), nrows=1, figsize=(len(sig) * 4, 4))
     for i in range(len(sig)):
-        sns.violinplot(data=adata.obs, x='compare', y=sig[i], ax=axes[i])
-        axes[i].annotate("p={:0.3e}".format(p[i]), xy=(0.2,0.92*axes[i].get_ylim()[1]))
+        sns.violinplot(data=adata.obs, x="compare", y=sig[i], ax=axes[i])
+        axes[i].annotate(
+            "p={:0.3e}".format(p[i]), xy=(0.2, 0.92 * axes[i].get_ylim()[1])
+        )
         axes[i].set_xlabel(None)
     fig.tight_layout()
 
@@ -249,7 +319,12 @@ if __name__ == "__main__":
         type=str,
         help="Heuristics for comparing. Several can be specified with e.g. '--metrics arcsinh_total_counts arcsinh_n_genes_by_counts pct_counts_mito'",
         nargs="+",
-        default=["arcsinh_total_counts","arcsinh_n_genes_by_counts","pct_counts_ambient","pct_counts_mito"],
+        default=[
+            "arcsinh_total_counts",
+            "arcsinh_n_genes_by_counts",
+            "pct_counts_ambient",
+            "pct_counts_mito",
+        ],
     )
     parser.add_argument(
         "--mito-names",
@@ -265,9 +340,7 @@ if __name__ == "__main__":
         default=".",
     )
     parser.add_argument(
-        "--cnmf",
-        help="Are cNMF usages available for testing?",
-        action="store_true"
+        "--cnmf", help="Are cNMF usages available for testing?", action="store_true"
     )
 
     args = parser.parse_args()
@@ -282,16 +355,10 @@ if __name__ == "__main__":
     set_diff(adata, labels=args.labels, metrics=args.metrics)
     # generate plot of chosen metrics' distribution in two cell label populations
     print(
-        "Saving distribution plots to {}/{}_metrics.png".format(
-            args.output_dir, name
-        )
+        "Saving distribution plots to {}/{}_metrics.png".format(args.output_dir, name)
     )
     plot_set_obs(adata, labels=args.labels, metrics=args.metrics, bins=40, show=False)
-    plt.savefig(
-        "{}/{}_metrics.png".format(
-            args.output_dir, name
-        )
-    )
+    plt.savefig("{}/{}_metrics.png".format(args.output_dir, name))
     if args.cnmf:
         # print significant GEP usages to console
         fig, sig, insig = cnmf_usage_test(adata, labels=args.labels)
@@ -301,20 +368,14 @@ if __name__ == "__main__":
                 args.output_dir, name
             )
         )
-        fig.savefig(
-            "{}/{}_sigGEPs.png".format(
-                args.output_dir, name
-            )
-        )
+        fig.savefig("{}/{}_sigGEPs.png".format(args.output_dir, name))
         # generate plot of significant GEP loadings
         print(
             "Saving significant NMF GEP loadings to {}/{}_sigspectra.png".format(
                 args.output_dir, name
             )
         )
-        rank_genes(adata, indices=[int(i.split('_', 1)[1])-1 for i in sig], show=False)
-        plt.savefig(
-            "{}/{}_sigspectra.png".format(
-                args.output_dir, name
-            )
+        rank_genes(
+            adata, indices=[int(i.split("_", 1)[1]) - 1 for i in sig], show=False
         )
+        plt.savefig("{}/{}_sigspectra.png".format(args.output_dir, name))
