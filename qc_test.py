@@ -33,7 +33,7 @@ import scanpy as sc
 import seaborn as sns
 from matplotlib import gridspec
 from scipy.stats import mannwhitneyu
-from dropkeeper import recipe_dropkeeper
+from dropkick import recipe_dropkick
 
 
 def set_diff(adata, labels, metrics=None):
@@ -241,7 +241,7 @@ if __name__ == "__main__":
         type=str,
         help="Labels defining cell sets to compare",
         nargs="+",
-        required=True,
+        default=["manual_label", "dropkick_label"],
     )
     parser.add_argument(
         "-m",
@@ -277,7 +277,7 @@ if __name__ == "__main__":
     print("\nReading in counts data from {}\n".format(args.counts))
     adata = sc.read(args.counts)
     # preprocess data and calculate metrics
-    recipe_dropkeeper(adata, mito_names=args.mito_names)
+    recipe_dropkick(adata, mito_names=args.mito_names)
     # print set differences to console
     set_diff(adata, labels=args.labels, metrics=args.metrics)
     # generate plot of chosen metrics' distribution in two cell label populations

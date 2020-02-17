@@ -4,59 +4,17 @@ Automated QC classifier pipeline
 
 @author: C Heiser
 
-usage: qc_pipeline.py [-h] -c COUNTS [--obs-cols OBS_COLS [OBS_COLS ...]]
-                      [--directions DIRECTIONS [DIRECTIONS ...]]
-                      [--thresh-method THRESH_METHOD]
-                      [--mito-names MITO_NAMES] [--n-hvgs N_HVGS]
-                      [--seed SEED] [--output-dir [OUTPUT_DIR]]
-                      [--alphas [ALPHAS [ALPHAS ...]]] [--pos-frac POS_FRAC]
-                      [--neg-frac NEG_FRAC]
-                      {ridge,twostep}
 
-positional arguments:
-  {ridge,twostep}
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -c COUNTS, --counts COUNTS
-                        [all] Input (cell x gene) counts matrix as .h5ad or
-                        tab delimited text file
-  --obs-cols OBS_COLS [OBS_COLS ...]
-                        [all] Heuristics for thresholding. Several can be
-                        specified with '--obs-cols arcsinh_n_genes_by_counts
-                        pct_counts_ambient'
-  --directions DIRECTIONS [DIRECTIONS ...]
-                        [all] Direction of thresholding for each heuristic.
-                        Several can be specified with '--obs-cols above below'
-  --thresh-method THRESH_METHOD
-                        [all] Method used for automatic thresholding on
-                        heuristics. One of ['otsu','li','mean']
-  --mito-names MITO_NAMES
-                        [all] Substring or regex defining mitochondrial genes
-  --n-hvgs N_HVGS       [all] Number of highly variable genes for training
-                        model
-  --seed SEED           [all] Random state for cross validation [ridge] or
-                        sampling training set [twostep]
-  --output-dir [OUTPUT_DIR]
-                        [all] Output directory. Output will be placed in
-                        [output-dir]/[name]/...
-  --alphas [ALPHAS [ALPHAS ...]]
-                        [ridge] Alpha values for ridge regression model.
-                        Several can be specified with '--alphas 100 200 300
-                        400'
-  --pos-frac POS_FRAC   [twostep] Fraction of cells below threshold to sample
-                        for training set
-  --neg-frac NEG_FRAC   [twostep] Fraction of cells above threshold to sample
-                        for training set
 """
 import argparse
+import itertools
 import os, errno
 import numpy as np
 import matplotlib.pyplot as plt
 import scanpy as sc
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
-from sklearn.linear_model import RidgeClassifier, SGDClassifier
-from sklearn.model_selection import KFold, GridSearchCV
+from sklearn.linear_model import RidgeClassifier, SGDClassifier, LogisticRegression
+from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 from PU_twostep import twoStep
 from progressbar import ProgressBar
@@ -74,7 +32,7 @@ def check_dir_exists(path):
             raise
 
 
-def recipe_dropkeeper(
+def recipe_dropkick(
     adata,
     X_final="raw_counts",
     calc_metrics=True,
@@ -95,7 +53,7 @@ def recipe_dropkeeper(
             calculation of mito expression
         n_ambient (int): number of ambient genes to call. top genes by cells.
         target_sum (int): total sum of counts for each cell prior to arcsinh 
-            and log1p transformations; default 1e6 for TPM
+            and log1p transformations; default None to use median counts.
         n_hvgs (int or None): number of HVGs to calculate using Seurat method
             if None, do not calculate HVGs
 
@@ -218,7 +176,7 @@ def filter_thresh_obs(
     adata,
     thresholds,
     obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_ambient"],
-    directions=["above", "below",],
+    directions=["above", "below"],
     inclusive=True,
     name="thresh_filter",
 ):
@@ -288,7 +246,7 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
             with X and y for each fold
     """
     print("Splitting data into {} folds for cross validation and feature-selecting on training sets".format(n_splits), end="")
-    kf = KFold(
+    kf = StratifiedKFold(
         n_splits=n_splits, shuffle=shuffle, random_state=seed
     )  # generate KFold object for splitting data
     splits = {
@@ -298,7 +256,7 @@ def kfold_split_adata(adata, label="train", n_splits=5, n_hvgs=2000, seed=None, 
 
     a = adata.copy()  # copy anndata to not alter original
 
-    for train_i, test_i in kf.split(a.X):
+    for train_i, test_i in kf.split(X=a.X, y=a.obs[label]):
         if n_hvgs is None:
             # if no HVGs, train on all genes. NOTE: this slows computation considerably.
             tmp_train = a[train_i,:].copy()
@@ -327,7 +285,7 @@ def validator(splits, classifier):
     """loops through kfold_split object and calculates accuracy scores for given classifier"""
     scores = []
     for split in range(0, len(splits["train"]["data"])):
-        classifier.partial_fit(splits["train"]["data"][split], splits["train"]["labels"][split], classes=[0,1])
+        classifier.fit(splits["train"]["data"][split], splits["train"]["labels"][split])
         score = classifier.score(
             splits["test"]["data"][split], splits["test"]["labels"][split]
         )
@@ -335,19 +293,20 @@ def validator(splits, classifier):
     return np.mean(scores)
 
 
-def ridge_pipe(
+def regression_pipe(
     adata,
     mito_names="^mt-|^MT-",
     n_hvgs=2000,
     thresh_method="otsu",
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(100, 200, 300, 400, 500),
+    alphas=(0.01, 0.03, 0.05),
+    l1_ratios=(0.1, 0.2, 0.3),
     n_splits=5,
     seed=18,
 ):
     """
-    generate ridge regression model of cell quality
+    generate logistic regression model of cell quality
 
     Parameters:
         adata (anndata.AnnData): object containing unfiltered, raw scRNA-seq
@@ -360,22 +319,22 @@ def ridge_pipe(
         metrics (list of str): name of column(s) to threshold from adata.obs
         directions (list of str): 'below' or 'above', indicating which
             direction to keep (label=1)
-        alphas (tuple of int): alpha values to test using RidgeClassifier
+        alphas (tuple of int): alpha values to test using LogisticRegression
             with n-fold cross validation
         n_splits (int): number of splits for n-fold cross validation
         seed (int): random state for n-fold cross validation
 
     Returns:
         adata_thresh (dict): dictionary of automated thresholds on heuristics
-        rc (RidgeClassifierCV): trained ridge classifier
+        rc (LogisticRegression): trained logistic regression classifier
 
-        updated adata inplace to include 'train', 'dropkeeper_score', and
-            'dropkeeper_label' columns in .obs
+        updated adata inplace to include 'train', 'dropkick_score', and
+            'dropkick_label' columns in .obs
     """
     # 0) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
     #a = adata.copy()  # copy AnnData object to avoid manipulating original
-    recipe_dropkeeper(
+    recipe_dropkick(
         adata,
         X_final="raw_counts",
         calc_metrics=True,
@@ -398,22 +357,22 @@ def ridge_pipe(
         name="train",
     )
 
-    # 3) cross-validation to choose alpha value
+    # 3) cross-validation to choose alpha and l1_ratio values
     splits = kfold_split_adata(adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True)
-    print("Training classifier by {}-fold cross validation with alpha values: {}".format(n_splits, alphas))
+    print("Training classifier by {}-fold cross validation with alpha values: {} and regularization ratios: {}".format(n_splits, alphas, l1_ratios))
     cv_scores = {"alpha":[], "l1_ratio":[], "score":[]}
-    for l1_ratio in pbar([0.1,0.3,0.5,0.7,0.9]):
-        for alpha in alphas:
-            rc = SGDClassifier(loss="hinge", penalty="elasticnet", alpha=alpha, l1_ratio=l1_ratio)
-            cv_scores["alpha"].append(alpha)
-            cv_scores["l1_ratio"].append(l1_ratio)
-            cv_scores["score"].append(validator(splits, rc))
-
+    params_list = list(itertools.chain.from_iterable([[x for x in zip(np.repeat(l1_ratios[y], len(alphas)), alphas)] for y in range(len(l1_ratios))]))
+    for params in pbar(params_list):
+        rc = LogisticRegression(penalty="elasticnet", C=params[1], l1_ratio=params[0], solver="saga", random_state=seed)
+        cv_scores["l1_ratio"].append(params[0])
+        cv_scores["alpha"].append(params[1])
+        cv_scores["score"].append(validator(splits, rc))
+    # determine optimal alpha and l1_ratio values by accuracy score
     alpha_ = cv_scores["alpha"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose alpha value
     l1_ratio_ = cv_scores["l1_ratio"][cv_scores["score"].index(max(cv_scores["score"]))]  # choose l1 ratio
     print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
 
-    # 4) train final ridge regression classifier
+    # 4) train final regression classifier
     y = adata.obs["train"].copy(deep=True)  # training labels defined above
     if n_hvgs is None:
         # if no HVGs, train on all genes. NOTE: this slows computation considerably.
@@ -421,16 +380,16 @@ def ridge_pipe(
     else:
         # use HVGs if provided
         X = adata.layers["arcsinh_norm"][:, adata.var["highly_variable"] == True].copy()
-    rc = SGDClassifier(loss="hinge", penalty="elasticnet", alpha=alpha_, l1_ratio=l1_ratio_)
+    rc = LogisticRegression(penalty="elasticnet", C=alpha_, l1_ratio=l1_ratio_, solver="saga", random_state=seed)
     rc.fit(X, y)
 
     # 5) use ridge model to assign scores and labels
     print("Assigning scores and labels from model")
-    adata.obs["dropkeeper_score"] = rc.decision_function(X)
-    adata.obs["dropkeeper_label"] = rc.predict(X)
+    adata.obs["dropkick_score"] = rc.predict_proba(X)[:,1]
+    adata.obs["dropkick_label"] = rc.predict(X)
 
     print("Done!")
-    return adata_thresh, rc, alpha_, l1_ratio
+    return adata_thresh, rc, alpha_, l1_ratio_
 
 
 def sampling_probabilities(
@@ -566,12 +525,12 @@ def twostep_pipe(
         adata_thresh (dict): dictionary of automated thresholds on heuristics
         rc (RidgeClassifierCV): trained ridge classifier
 
-        updated adata inplace to include 'train', 'dropkeeper_score', and
-            'dropkeeper_label' columns in .obs
+        updated adata inplace to include 'train', 'dropkick_score', and
+            'dropkick_label' columns in .obs
     """
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
-    recipe_dropkeeper(
+    recipe_dropkick(
         adata,
         mito_names=mito_names,
         n_hvgs=n_hvgs,
@@ -655,7 +614,7 @@ def twostep_pipe(
         # use HVGs if provided
         X = adata.X[:, adata.var["highly_variable"] == True]
     print("Training two-step classifier:")
-    adata.obs["dropkeeper_score"], adata.obs["dropkeeper_label"] = twoStep(
+    adata.obs["dropkick_score"], adata.obs["dropkick_label"] = twoStep(
         clf=clf, X=X, y=y, thresh="min", n_iter=18
     )
     print(
@@ -663,10 +622,10 @@ def twostep_pipe(
             (y == -1).sum()
         )
     )
-    adata.obs.loc[y == -1, "dropkeeper_label"] = clf.predict(
+    adata.obs.loc[y == -1, "dropkick_label"] = clf.predict(
         X[y == -1]
     )  # predict remaining unlabeled cells using trained clf
-    adata.obs["dropkeeper_label"] = (~adata.obs["dropkeeper_label"].astype(bool)).astype(
+    adata.obs["dropkick_label"] = (~adata.obs["dropkick_label"].astype(bool)).astype(
         int
     )  # flip labels so 1 is good cell
 
@@ -677,7 +636,7 @@ def twostep_pipe(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", type=str, choices=["ridge", "twostep"],
+        "command", type=str, choices=["regression", "twostep"],
     )
     parser.add_argument(
         "-c",
@@ -721,13 +680,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--seed",
         type=int,
-        help="[all] Random state for cross validation [ridge] or sampling training set [twostep]",
+        help="[all] Random state for cross validation [regression] or sampling training set [twostep]",
         default=18,
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        help="[all] Output directory. Output will be placed in [output-dir]/[name]/...",
+        help="[all] Output directory. Output will be placed in [output-dir]/[name]...",
         nargs="?",
         default=".",
     )
@@ -735,9 +694,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--alphas",
         type=float,
-        help="[ridge] Alpha values for ridge regression model. Several can be specified with '--alphas 100 200 300 400'",
+        help="[regression] Alpha values for ridge regression model. Several can be specified with '--alphas 100 200 300 400'",
         nargs="*",
         default=[100, 200, 300, 400, 500],
+    )
+    parser.add_argument(
+        "--l1-ratios",
+        type=float,
+        help="[regression] Ratio between l1 and l2 regularization for regression model. Several can be specified with '--l1-ratios 0.1 0.2 0.3 0.4 0.5'",
+        nargs="*",
+        default=[0.1, 0.2, 0.3, 0.4, 0.5],
+    )
+    parser.add_argument(
+        "--n-splits",
+        type=int,
+        help="[regression] Number of splits for cross validation",
+        default=5,
     )
 
     parser.add_argument(
@@ -765,8 +737,8 @@ if __name__ == "__main__":
     # get basename of file for writing outputs
     name = os.path.splitext(os.path.basename(args.counts))[0]
 
-    if args.command == "ridge":
-        thresholds, ridge_model, alpha_, l1_ratio_ = ridge_pipe(
+    if args.command == "regression":
+        thresholds, regression_model, alpha_, l1_ratio_ = regression_pipe(
             tmp,
             mito_names=args.mito_names,
             n_hvgs=args.n_hvgs,
@@ -774,6 +746,8 @@ if __name__ == "__main__":
             metrics=args.obs_cols,
             directions=args.directions,
             alphas=args.alphas,
+            l1_ratios=args.l1_ratios,
+            n_splits=args.n_splits,
             seed=args.seed,
         )
         # generate plot of chosen training thresholds on heuristics
@@ -794,10 +768,10 @@ if __name__ == "__main__":
                 args.output_dir, name, args.command
             )
         )
-        adata.obs["train"], adata.obs["dropkeeper_score"], adata.obs["dropkeeper_label"] = (
+        adata.obs["train"], adata.obs["dropkick_score"], adata.obs["dropkick_label"] = (
             tmp.obs["train"],
-            tmp.obs["dropkeeper_score"],
-            tmp.obs["dropkeeper_label"],
+            tmp.obs["dropkick_score"],
+            tmp.obs["dropkick_label"],
         )
         adata.uns["pipeline_args"] = {
             "counts": args.counts,
@@ -850,14 +824,14 @@ if __name__ == "__main__":
         )
         (
             adata.obs["train"],
-            adata.obs["dropkeeper_score"],
-            adata.obs["dropkeeper_label"],
+            adata.obs["dropkick_score"],
+            adata.obs["dropkick_label"],
             adata.obs["pos_prob"],
             adata.obs["neg_prob"],
         ) = (
             tmp.obs["train"],
-            tmp.obs["dropkeeper_score"],
-            tmp.obs["dropkeeper_label"],
+            tmp.obs["dropkick_score"],
+            tmp.obs["dropkick_label"],
             tmp.obs["pos_prob"],
             tmp.obs["neg_prob"],
         )
@@ -879,5 +853,5 @@ if __name__ == "__main__":
 
     else:
         raise ValueError(
-            "Please provide a valid filtering command ('ridge', 'twostep')"
+            "Please provide a valid filtering command ('regression', 'twostep')"
         )
