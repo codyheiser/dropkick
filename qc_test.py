@@ -70,10 +70,8 @@ def set_diff(adata, labels, metrics=None):
             print(
                 "\t{}: {:0.3}".format(
                     m, round(adata.obs.loc[adata.obs[labels[0]] == 1, m].mean(), 3)
-                ),
-                end=" ",
+                )
             )
-        print("\n")
     print(
         "{} cells in {} - {} unique".format(
             adata.obs[labels[1]].sum(), labels[1], unique_1
@@ -84,10 +82,8 @@ def set_diff(adata, labels, metrics=None):
             print(
                 "\t{}: {:0.3}".format(
                     m, round(adata.obs.loc[adata.obs[labels[1]] == 1, m].mean(), 3)
-                ),
-                end=" ",
+                )
             )
-        print("\n")
 
 
 def plot_set_obs(
@@ -154,6 +150,28 @@ def plot_set_obs(
         plt.show()
     else:
         return fig
+
+
+def coef_inventory(adata, n=10):
+    """
+    return highest and lowest coefficient values from logistic regression model,
+    along with sparsity
+
+    Parameters:
+        adata (anndata.AnnData): object generated from dropkick.py ("regression")
+        n (int): number of genes to show at top and bottom of coefficient list
+
+    Returns:
+        prints top and bottom n genes by their coefficient values
+    """
+    print("\nTop HVGs by coefficient value (good cells):")
+    print(adata.var.loc[-adata.var.dropkick_coef.isna(), "dropkick_coef"].nlargest(n))
+    print("\nBottom HVGs by coefficient value (bad droplets):")
+    print(adata.var.loc[-adata.var.dropkick_coef.isna(), "dropkick_coef"].nsmallest(n))
+    n_zero = (adata.var.dropkick_coef==0).sum()
+    n_coef = (-adata.var.dropkick_coef.isna()).sum()
+    sparsity = round((n_zero/n_coef)*100, 3)
+    print("\n{} coefficients equal to zero. Model sparsity: {} %\n".format(n_zero, sparsity))
 
 
 def cnmf_usage_test(adata, labels):
@@ -347,15 +365,17 @@ if __name__ == "__main__":
     # get name for saving outputs
     name = os.path.splitext(os.path.basename(args.counts))[0]
     # read in AnnData object
-    print("\nReading in counts data from {}\n".format(args.counts))
+    print("\nReading in counts data from {}".format(args.counts))
     adata = sc.read(args.counts)
+    # print regression model coefficient inventory to console
+    coef_inventory(adata, n=10)
     # preprocess data and calculate metrics
-    recipe_dropkick(adata, mito_names=args.mito_names)
+    recipe_dropkick(adata, mito_names=args.mito_names, verbose=False)
     # print set differences to console
     set_diff(adata, labels=args.labels, metrics=args.metrics)
     # generate plot of chosen metrics' distribution in two cell label populations
     print(
-        "Saving distribution plots to {}/{}_metrics.png".format(args.output_dir, name)
+        "\nSaving distribution plots to {}/{}_metrics.png".format(args.output_dir, name)
     )
     plot_set_obs(adata, labels=args.labels, metrics=args.metrics, bins=40, show=False)
     plt.savefig("{}/{}_metrics.png".format(args.output_dir, name))

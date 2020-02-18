@@ -43,8 +43,7 @@ optional arguments:
                         [output-dir]/[name]...
   --alphas [ALPHAS [ALPHAS ...]]
                         [regression] Alpha values for ridge regression model.
-                        Several can be specified with '--alphas 100 200 300
-                        400'
+                        Several can be specified with '--alphas 0.01 0.02 0.03'
   --l1-ratios [L1_RATIOS [L1_RATIOS ...]]
                         [regression] Ratio between l1 and l2 regularization
                         for regression model. Several can be specified with '
@@ -90,6 +89,7 @@ def recipe_dropkick(
     n_ambient=10,
     target_sum=None,
     n_hvgs=2000,
+    verbose=True,
 ):
     """
     scanpy preprocessing recipe
@@ -106,6 +106,7 @@ def recipe_dropkick(
             and log1p transformations; default None to use median counts.
         n_hvgs (int or None): number of HVGs to calculate using Seurat method
             if None, do not calculate HVGs
+        verbose (bool): print updates to the console?
 
     Returns:
         AnnData.AnnData: adata is edited in place to include:
@@ -120,17 +121,21 @@ def recipe_dropkick(
     adata.layers["raw_counts"] = adata.X.copy()
 
     if calc_metrics:
+        if verbose:
+            print("Calculating metrics:")
         # identify mitochondrial genes
         adata.var["mito"] = adata.var_names.str.contains(mito_names)
         # identify putative ambient genes by lowest dropout pct (top 10)
         adata.var["ambient"] = adata.X.astype(bool).sum(axis=0) / adata.n_obs
-        print(
-            "Top {} ambient genes have dropout rates between {} and {} percent".format(
-                n_ambient,
-                round((1 - adata.var.ambient.nlargest(n=n_ambient).max()) * 100, 2),
-                round((1 - adata.var.ambient.nlargest(n=n_ambient).min()) * 100, 2),
+        if verbose:
+            print(
+                "Top {} ambient genes have dropout rates between {} and {} percent:\n\t{}".format(
+                    n_ambient,
+                    round((1 - adata.var.ambient.nlargest(n=n_ambient).max()) * 100, 2),
+                    round((1 - adata.var.ambient.nlargest(n=n_ambient).min()) * 100, 2),
+                    adata.var.ambient.nlargest(n=n_ambient).index.tolist(),
+                )
             )
-        )
         adata.var["ambient"] = (
             adata.var.ambient >= adata.var.ambient.nlargest(n=n_ambient).min()
         )
@@ -152,6 +157,8 @@ def recipe_dropkick(
 
     # HVGs
     if n_hvgs is not None:
+        if verbose:
+            print("Determining {} highly variable genes".format(n_hvgs))
         sc.pp.highly_variable_genes(
             adata, n_top_genes=n_hvgs, n_bins=20, flavor="seurat"
         )
@@ -367,9 +374,10 @@ def regression_pipe(
     thresh_method="otsu",
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(0.01, 0.03, 0.05),
-    l1_ratios=(0.1, 0.2, 0.3),
-    n_splits=5,
+    alphas=(0.002, 0.003, 0.005),
+    l1_ratios=(0.05, 0.1, 0.2),
+    n_splits=3,
+    max_iter=1000,
     seed=18,
 ):
     """
@@ -389,6 +397,7 @@ def regression_pipe(
         alphas (tuple of int): alpha values to test using LogisticRegression
             with n-fold cross validation
         n_splits (int): number of splits for n-fold cross validation
+        max_iter (int): number of iterations of SAG for LogisticRegression
         seed (int): random state for n-fold cross validation
 
     Returns:
@@ -399,8 +408,6 @@ def regression_pipe(
             'dropkick_label' columns in .obs
     """
     # 0) preprocess counts and calculate required QC metrics
-    print("Preprocessing counts and calculating metrics")
-    # a = adata.copy()  # copy AnnData object to avoid manipulating original
     recipe_dropkick(
         adata,
         X_final="raw_counts",
@@ -408,6 +415,7 @@ def regression_pipe(
         mito_names=mito_names,
         n_hvgs=n_hvgs,
         target_sum=None,
+        verbose=True,
     )
 
     # 1) threshold chosen heuristics using automated method
@@ -424,45 +432,50 @@ def regression_pipe(
         name="train",
     )
 
-    # 3) cross-validation to choose alpha and l1_ratio values
-    splits = kfold_split_adata(
-        adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True
-    )
-    print(
-        "Training classifier by {}-fold cross validation with alpha values: {} and regularization ratios: {}".format(
-            n_splits, alphas, l1_ratios
+    if len(alphas)>1 or len(l1_ratios)>1:
+        # 3) cross-validation to choose alpha and l1_ratio values
+        splits = kfold_split_adata(
+            adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True
         )
-    )
-    cv_scores = {"alpha": [], "l1_ratio": [], "score": []}
-    params_list = list(
-        itertools.chain.from_iterable(
-            [
-                [x for x in zip(np.repeat(l1_ratios[y], len(alphas)), alphas)]
-                for y in range(len(l1_ratios))
-            ]
+        print(
+            "Training classifier by {}-fold cross validation with alpha values: {} and regularization ratios: {}".format(
+                n_splits, alphas, l1_ratios
+            )
         )
-    )
-    for params in pbar(params_list):
-        rc = LogisticRegression(
-            penalty="elasticnet",
-            C=params[1],
-            l1_ratio=params[0],
-            solver="saga",
-            random_state=seed,
+        cv_scores = {"alpha": [], "l1_ratio": [], "score": []}
+        params_list = list(
+            itertools.chain.from_iterable(
+                [
+                    [x for x in zip(np.repeat(l1_ratios[y], len(alphas)), alphas)]
+                    for y in range(len(l1_ratios))
+                ]
+            )
         )
-        cv_scores["l1_ratio"].append(params[0])
-        cv_scores["alpha"].append(params[1])
-        cv_scores["score"].append(validator(splits, rc))
-    # determine optimal alpha and l1_ratio values by accuracy score
-    alpha_ = cv_scores["alpha"][
-        cv_scores["score"].index(max(cv_scores["score"]))
-    ]  # choose alpha value
-    l1_ratio_ = cv_scores["l1_ratio"][
-        cv_scores["score"].index(max(cv_scores["score"]))
-    ]  # choose l1 ratio
-    print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
+        for params in pbar(params_list):
+            rc = LogisticRegression(
+                penalty="elasticnet",
+                C=params[1],
+                l1_ratio=params[0],
+                solver="saga",
+                random_state=seed,
+                max_iter=max_iter,
+            )
+            cv_scores["l1_ratio"].append(params[0])
+            cv_scores["alpha"].append(params[1])
+            cv_scores["score"].append(validator(splits, rc))
+        # determine optimal alpha and l1_ratio values by accuracy score
+        alpha_ = cv_scores["alpha"][
+            cv_scores["score"].index(max(cv_scores["score"]))
+        ]  # choose alpha value
+        l1_ratio_ = cv_scores["l1_ratio"][
+            cv_scores["score"].index(max(cv_scores["score"]))
+        ]  # choose l1 ratio
+        print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
+    else:
+        alpha_, l1_ratio_ = alphas[0], l1_ratios[0]
 
     # 4) train final regression classifier
+    print("Training final regression model")
     y = adata.obs["train"].copy(deep=True)  # training labels defined above
     if n_hvgs is None:
         # if no HVGs, train on all genes. NOTE: this slows computation considerably.
@@ -476,11 +489,12 @@ def regression_pipe(
         l1_ratio=l1_ratio_,
         solver="saga",
         random_state=seed,
+        max_iter=max_iter,
     )
     rc.fit(X, y)
 
     # 5) use ridge model to assign scores and labels
-    print("Assigning scores and labels from model")
+    print("Assigning scores and labels")
     adata.obs["dropkick_score"] = rc.predict_proba(X)[:, 1]
     adata.obs["dropkick_label"] = rc.predict(X)
 
@@ -627,7 +641,7 @@ def twostep_pipe(
     # 1) preprocess counts and calculate required QC metrics
     print("Preprocessing counts and calculating metrics")
     recipe_dropkick(
-        adata, mito_names=mito_names, n_hvgs=n_hvgs, target_sum=None,
+        adata, mito_names=mito_names, n_hvgs=n_hvgs, target_sum=None, verbose=True
     )
 
     # 2) threshold chosen heuristics using automated method
@@ -787,22 +801,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "--alphas",
         type=float,
-        help="[regression] Alpha values for ridge regression model. Several can be specified with '--alphas 100 200 300 400'",
+        help="[regression] Alpha values for ridge regression model. Several can be specified with '--alphas 0.01 0.02 0.03'",
         nargs="*",
-        default=[100, 200, 300, 400, 500],
+        default=[0.001, 0.005, 0.01],
     )
     parser.add_argument(
         "--l1-ratios",
         type=float,
         help="[regression] Ratio between l1 and l2 regularization for regression model. Several can be specified with '--l1-ratios 0.1 0.2 0.3 0.4 0.5'",
         nargs="*",
-        default=[0.1, 0.2, 0.3, 0.4, 0.5],
+        default=[0.1, 0.2, 0.3],
     )
     parser.add_argument(
         "--n-splits",
         type=int,
         help="[regression] Number of splits for cross validation",
         default=5,
+    )
+    parser.add_argument(
+        "--n-iter",
+        type=int,
+        help="[regression] Maximum number of iterations for gradient descent",
+        default=1000,
     )
 
     parser.add_argument(
@@ -824,8 +844,9 @@ if __name__ == "__main__":
     print("\nReading in unfiltered counts from {}".format(args.counts), end="")
     adata = sc.read(args.counts)
     print(" - {} barcodes and {} genes".format(adata.shape[0], adata.shape[1]))
-    tmp = adata.copy()  # copy of AnnData to manipulate
-    # Check that output directory exists, create it if needed.
+    # create copy of AnnData to manipulate
+    tmp = adata.copy()
+    # check that output directory exists, create it if needed.
     check_dir_exists(args.output_dir)
     # get basename of file for writing outputs
     name = os.path.splitext(os.path.basename(args.counts))[0]
@@ -841,6 +862,7 @@ if __name__ == "__main__":
             alphas=args.alphas,
             l1_ratios=args.l1_ratios,
             n_splits=args.n_splits,
+            max_iter=args.n_iter,
             seed=args.seed,
         )
         # generate plot of chosen training thresholds on heuristics
@@ -859,10 +881,18 @@ if __name__ == "__main__":
                 args.output_dir, name, args.command
             )
         )
-        adata.obs["train"], adata.obs["dropkick_score"], adata.obs["dropkick_label"] = (
+        (
+            adata.obs["dropkick_train"],
+            adata.obs["dropkick_score"],
+            adata.obs["dropkick_label"],
+            adata.var["dropkick_hvgs"],
+            adata.var.loc[tmp.var.highly_variable, "dropkick_coef"],
+        ) = (
             tmp.obs["train"],
             tmp.obs["dropkick_score"],
             tmp.obs["dropkick_label"],
+            tmp.var["highly_variable"],
+            regression_model.coef_.squeeze(),
         )
         adata.uns["pipeline_args"] = {
             "counts": args.counts,
