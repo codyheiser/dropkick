@@ -8,8 +8,9 @@ usage: dropkick.py [-h] -c COUNTS [--obs-cols OBS_COLS [OBS_COLS ...]]
                    [--directions DIRECTIONS [DIRECTIONS ...]]
                    [--thresh-method THRESH_METHOD] [--mito-names MITO_NAMES]
                    [--n-hvgs N_HVGS] [--seed SEED] [--output-dir [OUTPUT_DIR]]
-                   [--alphas [ALPHAS [ALPHAS ...]]] [--n-splits N_SPLITS]
-                   [--n-iter N_ITER] [--pos-frac POS_FRAC]
+                   [--alphas [ALPHAS [ALPHAS ...]]] [--n-lambda N_LAMBDA]
+                   [--cut-point CUT_POINT] [--n-splits N_SPLITS]
+                   [--n-iter N_ITER] [--n-jobs N_JOBS] [--pos-frac POS_FRAC]
                    [--neg-frac NEG_FRAC]
                    {regression,twostep}
 
@@ -41,12 +42,18 @@ optional arguments:
                         [all] Output directory. Output will be placed in
                         [output-dir]/[name]...
   --alphas [ALPHAS [ALPHAS ...]]
-                        [regression] Ratio between l1 and l2 regularization
-                        for regression model. Several can be specified with '
-                        --l1-ratios 0.1 0.2 0.3'
+                        [regression] Ratios between l1 and l2 regularization
+                        for regression model
+  --n-lambda N_LAMBDA   [regression] Number of lambda (regularization
+                        strength) values to test
+  --cut-point CUT_POINT
+                        [regression] The cut point to use for selecting
+                        lambda_best
   --n-splits N_SPLITS   [regression] Number of splits for cross validation
-  --n-iter N_ITER       [regression] Maximum number of iterations for gradient
-                        descent
+  --n-iter N_ITER       [regression] Maximum number of iterations for
+                        optimization
+  --n-jobs N_JOBS       [regression] Maximum number of threads for cross
+                        validation
   --pos-frac POS_FRAC   [twostep] Fraction of cells below threshold to sample
                         for training set
   --neg-frac NEG_FRAC   [twostep] Fraction of cells above threshold to sample
@@ -54,7 +61,6 @@ optional arguments:
 """
 import argparse
 import sys
-import itertools
 import os, errno
 import numpy as np
 import matplotlib.pyplot as plt
@@ -62,15 +68,10 @@ import scanpy as sc
 import time
 import threading
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
-#from sklearn.linear_model import RidgeClassifier, LogisticRegression
-from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
 
 from PU_twostep import twoStep
 from logistic import LogitNet
-#from progressbar import ProgressBar
-
-#pbar = ProgressBar()
 
 
 class Spinner:
@@ -323,86 +324,6 @@ def filter_thresh_obs(
                 ] = 0
 
 
-def kfold_split_adata(
-    adata, label="train", n_splits=5, n_hvgs=2000, seed=None, shuffle=True
-):
-    """
-    split anndata object into k folds for cross-validation.
-    Use n_hvgs from train set only, if desired, to remove bias toward test set.
-
-    Parameters:
-        adata (anndata.AnnData): object containing unfiltered scRNA-seq data
-            with .layers["log1p_norm"] and .layers["arcsinh_norm"]
-        label (str): column of .obs that has labels
-        n_splits (int): number of folds to split adata into
-        n_hvgs (int or None): number of HVGs to calculate using Seurat method
-            if None, do not calculate HVGs
-        seed (int): random state for k-fold picking
-        shuffle (bool): shuffle order of cells before splitting?
-
-    Returns:
-        splits (dict): keys are "data" and "labels" and values are numpy arrays
-            with X and y for each fold
-    """
-    print(
-        "Splitting data into {} folds for cross validation and feature-selecting on training sets".format(
-            n_splits
-        ),
-        end="",
-    )
-    kf = StratifiedKFold(
-        n_splits=n_splits, shuffle=shuffle, random_state=seed
-    )  # generate KFold object for splitting data
-    splits = {
-        "train": {"data": [], "labels": []},
-        "test": {"data": [], "labels": []},
-    }  # initiate empty dictionary to dump matrix subsets into
-
-    a = adata.copy()  # copy anndata to not alter original
-
-    for train_i, test_i in kf.split(X=a.X, y=a.obs[label]):
-        if n_hvgs is None:
-            # if no HVGs, train on all genes. NOTE: this slows computation considerably.
-            tmp_train = a[train_i, :].copy()
-            tmp_test = a[test_i, :].copy()
-            splits["train"]["data"].append(tmp_train.layers["arcsinh_norm"])
-            splits["test"]["data"].append(tmp_test.layers["arcsinh_norm"])
-        else:
-            # subset on HVGs for each train fold if desired
-            a.X = a.layers[
-                "log1p_norm"
-            ].copy()  # put log1p transformation in .X for HVG determination
-            tmp_train = a[train_i, :].copy()
-            sc.pp.highly_variable_genes(
-                tmp_train, n_top_genes=n_hvgs, n_bins=20, flavor="seurat", subset=True
-            )
-            tmp_test = a[test_i, :].copy()
-            sc.pp.highly_variable_genes(
-                tmp_test, n_top_genes=n_hvgs, n_bins=20, flavor="seurat", subset=True
-            )
-            splits["train"]["data"].append(tmp_train.layers["arcsinh_norm"])
-            splits["test"]["data"].append(tmp_test.layers["arcsinh_norm"])
-        # put resulting labels in dictionary
-        splits["train"]["labels"].append(tmp_train.obs[label].copy(deep=True))
-        splits["test"]["labels"].append(tmp_test.obs[label].copy(deep=True))
-        print(" .", end="")
-
-    print("")
-    return splits
-
-
-def validator(splits, classifier):
-    """loops through kfold_split object and calculates accuracy scores for given classifier"""
-    scores = []
-    for split in range(0, len(splits["train"]["data"])):
-        classifier.fit(splits["train"]["data"][split], splits["train"]["labels"][split])
-        score = classifier.score(
-            splits["test"]["data"][split], splits["test"]["labels"][split]
-        )
-        scores.append(score)
-    return np.mean(scores)
-
-
 def regression_pipe(
     adata,
     mito_names="^mt-|^MT-",
@@ -410,9 +331,12 @@ def regression_pipe(
     thresh_method="otsu",
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(0.05, 0.1, 0.2),
+    alphas=(0.1, 0.15, 0.2),
+    n_lambda=10,
+    cut_point=1,
     n_splits=3,
     max_iter=1000,
+    n_jobs=-1,
     seed=18,
 ):
     """
@@ -429,11 +353,16 @@ def regression_pipe(
         metrics (list of str): name of column(s) to threshold from adata.obs
         directions (list of str): 'below' or 'above', indicating which
             direction to keep (label=1)
-        alphas (tuple of int): alpha values to test using LogisticRegression
-            with n-fold cross validation
+        alphas (tuple of int): alpha values to test using glmnet with n-fold
+            cross validation
+        n_lambda (int): number of lambda values to test in glmnet
+        cut_point (float): The cut point to use for selecting lambda_best.
+            arg_max lambda
+            cv_score(lambda)>=cv_score(lambda_max)-cut_point*standard_error(lambda_max)
         n_splits (int): number of splits for n-fold cross validation
-        max_iter (int): number of iterations of SAG for LogisticRegression
-        seed (int): random state for n-fold cross validation
+        max_iter (int): number of iterations for glmnet optimization
+        n_jobs (int): number of threads for cross validation by glmnet
+        seed (int): random state for cross validation by glmnet
 
     Returns:
         adata_thresh (dict): dictionary of automated thresholds on heuristics
@@ -467,14 +396,15 @@ def regression_pipe(
         name="train",
     )
 
-    X = adata.X[:, adata.var.highly_variable].copy()
-    y = adata.obs["train"].copy(deep=True)
+    X = adata.X[:, adata.var.highly_variable].copy()  # final X is HVGs
+    y = adata.obs["train"].copy(deep=True)  # final y is "train" labels from step 2
+
     if len(alphas)>1:
         # 3.1) cross-validation to choose alpha and lambda values
-        cv_scores = {"rc": [], "lambda": [], "alpha": [], "score": []}
+        cv_scores = {"rc": [], "lambda": [], "alpha": [], "score": []}  # dictionary o/p
         for alpha in alphas:
-            print("Training LogitNet with alpha: {}".format(alpha), end=" ")
-            rc = LogitNet(alpha=alpha, n_lambda=10, n_jobs=4, n_splits=n_splits, random_state=seed)
+            print("Training LogitNet with alpha: {}".format(alpha), end="  ")
+            rc = LogitNet(alpha=alpha, n_lambda=n_lambda, cut_point=cut_point, n_splits=n_splits, max_iter=max_iter, n_jobs=n_jobs, random_state=seed)
             with Spinner():
                 rc.fit(adata=adata, y=y, n_hvgs=n_hvgs)
             cv_scores["rc"].append(rc)
@@ -494,8 +424,8 @@ def regression_pipe(
         print("Chosen lambda value: {}; Chosen alpha value: {}".format(lambda_, alpha_))
     else:
         # 3.2) train model with single alpha value
-        print("Training LogitNet with alpha: {}".format(alphas[0]), end=" ")
-        rc_ = LogitNet(alpha=alphas[0], n_lambda=10, n_jobs=4, n_splits=n_splits, random_state=seed)
+        print("Training LogitNet with alpha: {}".format(alphas[0]), end="  ")
+        rc_ = LogitNet(alpha=alphas[0], n_lambda=n_lambda, cut_point=cut_point, n_splits=n_splits, max_iter=max_iter, n_jobs=n_jobs, random_state=seed)
         with Spinner():
             rc_.fit(adata=adata, y=y, n_hvgs=n_hvgs)
         lambda_, alpha_ = rc_.lambda_best_, alphas[0]
@@ -506,7 +436,7 @@ def regression_pipe(
     adata.obs["dropkick_label"] = rc_.predict(X)
     adata.var.loc[adata.var.highly_variable, "dropkick_coef"] = rc_.coef_.squeeze()
 
-    print("Done!")
+    print("Done!\n")
     return adata_thresh, rc_, lambda_, alpha_
 
 
@@ -621,7 +551,7 @@ def twostep_pipe(
     seed=18,
 ):
     """
-    generate ridge regression model of cell quality
+    generate iteratively-trained RandomForest model of cell quality
 
     Parameters:
         adata (anndata.AnnData): object containing unfiltered, raw scRNA-seq
@@ -744,8 +674,9 @@ def twostep_pipe(
         int
     )  # flip labels so 1 is good cell
 
-    print("Done!")
+    print("Done!\n")
     return adata_thresh, clf
+
 
 
 if __name__ == "__main__":
@@ -809,21 +740,39 @@ if __name__ == "__main__":
     parser.add_argument(
         "--alphas",
         type=float,
-        help="[regression] Ratio between l1 and l2 regularization for regression model. Several can be specified with '--l1-ratios 0.1 0.2 0.3'",
+        help="[regression] Ratios between l1 and l2 regularization for regression model",
         nargs="*",
-        default=[0.1, 0.2, 0.3],
+        default=[0.1, 0.15, 0.2],
+    )
+    parser.add_argument(
+        "--n-lambda",
+        type=int,
+        help="[regression] Number of lambda (regularization strength) values to test",
+        default=10,
+    )
+    parser.add_argument(
+        "--cut-point",
+        type=float,
+        help="[regression] The cut point to use for selecting lambda_best",
+        default=1.0,
     )
     parser.add_argument(
         "--n-splits",
         type=int,
         help="[regression] Number of splits for cross validation",
-        default=5,
+        default=3,
     )
     parser.add_argument(
         "--n-iter",
         type=int,
-        help="[regression] Maximum number of iterations for gradient descent",
-        default=1000,
+        help="[regression] Maximum number of iterations for optimization",
+        default=100000,
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        help="[regression] Maximum number of threads for cross validation",
+        default=-1,
     )
 
     parser.add_argument(
@@ -845,8 +794,10 @@ if __name__ == "__main__":
     print("\nReading in unfiltered counts from {}".format(args.counts), end="")
     adata = sc.read(args.counts)
     print(" - {} barcodes and {} genes".format(adata.shape[0], adata.shape[1]))
+
     # create copy of AnnData to manipulate
     tmp = adata.copy()
+
     # check that output directory exists, create it if needed.
     check_dir_exists(args.output_dir)
     # get basename of file for writing outputs
@@ -861,8 +812,11 @@ if __name__ == "__main__":
             metrics=args.obs_cols,
             directions=args.directions,
             alphas=args.alphas,
+            n_lambda=args.n_lambda,
+            cut_point=args.cut_point,
             n_splits=args.n_splits,
             max_iter=args.n_iter,
+            n_jobs=args.n_jobs,
             seed=args.seed,
         )
         # generate plot of chosen training thresholds on heuristics
@@ -896,14 +850,18 @@ if __name__ == "__main__":
         )
         adata.uns["pipeline_args"] = {
             "counts": args.counts,
+            "n_hvgs": args.n_hvgs,
+            "thresh_method": args.thresh_method,
             "obs_cols": args.obs_cols,
             "directions": args.directions,
             "alphas": args.alphas,
             "chosen_alpha": alpha_,
             "chosen_lambda": lambda_,
-            "mito_names": args.mito_names,
-            "n_hvgs": args.n_hvgs,
-            "thresh_method": args.thresh_method,
+            "n_lambda": args.n_lambda,
+            "cut_point": args.cut_point,
+            "n_splits": args.n_splits,
+            "max_iter": args.n_iter,
+            "seed": args.seed,
         }  # save command-line arguments to .uns for reference
         adata.write(
             "{}/{}_{}.h5ad".format(args.output_dir, name, args.command),
