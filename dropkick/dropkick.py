@@ -8,9 +8,8 @@ usage: dropkick.py [-h] -c COUNTS [--obs-cols OBS_COLS [OBS_COLS ...]]
                    [--directions DIRECTIONS [DIRECTIONS ...]]
                    [--thresh-method THRESH_METHOD] [--mito-names MITO_NAMES]
                    [--n-hvgs N_HVGS] [--seed SEED] [--output-dir [OUTPUT_DIR]]
-                   [--alphas [ALPHAS [ALPHAS ...]]]
-                   [--l1-ratios [L1_RATIOS [L1_RATIOS ...]]]
-                   [--n-splits N_SPLITS] [--pos-frac POS_FRAC]
+                   [--alphas [ALPHAS [ALPHAS ...]]] [--n-splits N_SPLITS]
+                   [--n-iter N_ITER] [--pos-frac POS_FRAC]
                    [--neg-frac NEG_FRAC]
                    {regression,twostep}
 
@@ -42,32 +41,69 @@ optional arguments:
                         [all] Output directory. Output will be placed in
                         [output-dir]/[name]...
   --alphas [ALPHAS [ALPHAS ...]]
-                        [regression] Alpha values for ridge regression model.
-                        Several can be specified with '--alphas 0.01 0.02 0.03'
-  --l1-ratios [L1_RATIOS [L1_RATIOS ...]]
                         [regression] Ratio between l1 and l2 regularization
                         for regression model. Several can be specified with '
-                        --l1-ratios 0.1 0.2 0.3 0.4 0.5'
+                        --l1-ratios 0.1 0.2 0.3'
   --n-splits N_SPLITS   [regression] Number of splits for cross validation
+  --n-iter N_ITER       [regression] Maximum number of iterations for gradient
+                        descent
   --pos-frac POS_FRAC   [twostep] Fraction of cells below threshold to sample
                         for training set
   --neg-frac NEG_FRAC   [twostep] Fraction of cells above threshold to sample
                         for training set
 """
 import argparse
+import sys
 import itertools
 import os, errno
 import numpy as np
 import matplotlib.pyplot as plt
 import scanpy as sc
+import time
+import threading
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
-from sklearn.linear_model import RidgeClassifier, SGDClassifier, LogisticRegression
+#from sklearn.linear_model import RidgeClassifier, LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
-from PU_twostep import twoStep
-from progressbar import ProgressBar
 
-pbar = ProgressBar()
+from PU_twostep import twoStep
+from logistic import LogitNet
+#from progressbar import ProgressBar
+
+#pbar = ProgressBar()
+
+
+class Spinner:
+    busy = False
+    delay = 0.1
+
+    @staticmethod
+    def spinning_cursor():
+        while 1: 
+            for cursor in '|/-\\': yield cursor
+
+    def __init__(self, delay=None):
+        self.spinner_generator = self.spinning_cursor()
+        if delay and float(delay): self.delay = delay
+
+    def spinner_task(self):
+        while self.busy:
+            sys.stdout.write(next(self.spinner_generator))
+            sys.stdout.flush()
+            time.sleep(self.delay)
+            sys.stdout.write('\b')
+            sys.stdout.flush()
+
+    def __enter__(self):
+        self.busy = True
+        threading.Thread(target=self.spinner_task).start()
+
+    def __exit__(self, exception, value, tb):
+        self.busy = False
+        time.sleep(self.delay)
+        if exception is not None:
+            return False
+
 
 
 def check_dir_exists(path):
@@ -374,8 +410,7 @@ def regression_pipe(
     thresh_method="otsu",
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(0.002, 0.003, 0.005),
-    l1_ratios=(0.05, 0.1, 0.2),
+    alphas=(0.05, 0.1, 0.2),
     n_splits=3,
     max_iter=1000,
     seed=18,
@@ -410,7 +445,7 @@ def regression_pipe(
     # 0) preprocess counts and calculate required QC metrics
     recipe_dropkick(
         adata,
-        X_final="raw_counts",
+        X_final="arcsinh_norm",
         calc_metrics=True,
         mito_names=mito_names,
         n_hvgs=n_hvgs,
@@ -432,74 +467,47 @@ def regression_pipe(
         name="train",
     )
 
-    if len(alphas)>1 or len(l1_ratios)>1:
-        # 3) cross-validation to choose alpha and l1_ratio values
-        splits = kfold_split_adata(
-            adata, label="train", n_splits=n_splits, n_hvgs=n_hvgs, seed=seed, shuffle=True
-        )
-        print(
-            "Training classifier by {}-fold cross validation with alpha values: {} and regularization ratios: {}".format(
-                n_splits, alphas, l1_ratios
-            )
-        )
-        cv_scores = {"alpha": [], "l1_ratio": [], "score": []}
-        params_list = list(
-            itertools.chain.from_iterable(
-                [
-                    [x for x in zip(np.repeat(l1_ratios[y], len(alphas)), alphas)]
-                    for y in range(len(l1_ratios))
-                ]
-            )
-        )
-        for params in pbar(params_list):
-            rc = LogisticRegression(
-                penalty="elasticnet",
-                C=params[1],
-                l1_ratio=params[0],
-                solver="saga",
-                random_state=seed,
-                max_iter=max_iter,
-            )
-            cv_scores["l1_ratio"].append(params[0])
-            cv_scores["alpha"].append(params[1])
-            cv_scores["score"].append(validator(splits, rc))
-        # determine optimal alpha and l1_ratio values by accuracy score
-        alpha_ = cv_scores["alpha"][
+    X = adata.X[:, adata.var.highly_variable].copy()
+    y = adata.obs["train"].copy(deep=True)
+    if len(alphas)>1:
+        # 3.1) cross-validation to choose alpha and lambda values
+        cv_scores = {"rc": [], "lambda": [], "alpha": [], "score": []}
+        for alpha in alphas:
+            print("Training LogitNet with alpha: {}".format(alpha), end=" ")
+            rc = LogitNet(alpha=alpha, n_lambda=10, n_jobs=4, n_splits=n_splits, random_state=seed)
+            with Spinner():
+                rc.fit(adata=adata, y=y, n_hvgs=n_hvgs)
+            cv_scores["rc"].append(rc)
+            cv_scores["alpha"].append(alpha)
+            cv_scores["lambda"].append(rc.lambda_best_)
+            cv_scores["score"].append(rc.score(X, y, lamb=rc.lambda_best_))
+        # determine optimal lambda and alpha values by accuracy score
+        lambda_ = cv_scores["lambda"][
             cv_scores["score"].index(max(cv_scores["score"]))
         ]  # choose alpha value
-        l1_ratio_ = cv_scores["l1_ratio"][
+        alpha_ = cv_scores["alpha"][
             cv_scores["score"].index(max(cv_scores["score"]))
         ]  # choose l1 ratio
-        print("Chosen alpha value: {}; Chosen l1 ratio: {}".format(alpha_, l1_ratio_))
+        rc_ = cv_scores["rc"][
+            cv_scores["score"].index(max(cv_scores["score"]))
+        ]  # choose classifier
+        print("Chosen lambda value: {}; Chosen alpha value: {}".format(lambda_, alpha_))
     else:
-        alpha_, l1_ratio_ = alphas[0], l1_ratios[0]
-
-    # 4) train final regression classifier
-    print("Training final regression model")
-    y = adata.obs["train"].copy(deep=True)  # training labels defined above
-    if n_hvgs is None:
-        # if no HVGs, train on all genes. NOTE: this slows computation considerably.
-        X = adata.layers["arcsinh_norm"].copy()
-    else:
-        # use HVGs if provided
-        X = adata.layers["arcsinh_norm"][:, adata.var["highly_variable"] == True].copy()
-    rc = LogisticRegression(
-        penalty="elasticnet",
-        C=alpha_,
-        l1_ratio=l1_ratio_,
-        solver="saga",
-        random_state=seed,
-        max_iter=max_iter,
-    )
-    rc.fit(X, y)
+        # 3.2) train model with single alpha value
+        print("Training LogitNet with alpha: {}".format(alphas[0]), end=" ")
+        rc_ = LogitNet(alpha=alphas[0], n_lambda=10, n_jobs=4, n_splits=n_splits, random_state=seed)
+        with Spinner():
+            rc_.fit(adata=adata, y=y, n_hvgs=n_hvgs)
+        lambda_, alpha_ = rc_.lambda_best_, alphas[0]
 
     # 5) use ridge model to assign scores and labels
     print("Assigning scores and labels")
-    adata.obs["dropkick_score"] = rc.predict_proba(X)[:, 1]
-    adata.obs["dropkick_label"] = rc.predict(X)
+    adata.obs["dropkick_score"] = rc_.predict_proba(X)[:, 1]
+    adata.obs["dropkick_label"] = rc_.predict(X)
+    adata.var.loc[adata.var.highly_variable, "dropkick_coef"] = rc_.coef_.squeeze()
 
     print("Done!")
-    return adata_thresh, rc, alpha_, l1_ratio_
+    return adata_thresh, rc_, lambda_, alpha_
 
 
 def sampling_probabilities(
@@ -801,14 +809,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--alphas",
         type=float,
-        help="[regression] Alpha values for ridge regression model. Several can be specified with '--alphas 0.01 0.02 0.03'",
-        nargs="*",
-        default=[0.001, 0.005, 0.01],
-    )
-    parser.add_argument(
-        "--l1-ratios",
-        type=float,
-        help="[regression] Ratio between l1 and l2 regularization for regression model. Several can be specified with '--l1-ratios 0.1 0.2 0.3 0.4 0.5'",
+        help="[regression] Ratio between l1 and l2 regularization for regression model. Several can be specified with '--l1-ratios 0.1 0.2 0.3'",
         nargs="*",
         default=[0.1, 0.2, 0.3],
     )
@@ -852,7 +853,7 @@ if __name__ == "__main__":
     name = os.path.splitext(os.path.basename(args.counts))[0]
 
     if args.command == "regression":
-        thresholds, regression_model, alpha_, l1_ratio_ = regression_pipe(
+        thresholds, regression_model, lambda_, alpha_ = regression_pipe(
             tmp,
             mito_names=args.mito_names,
             n_hvgs=args.n_hvgs,
@@ -860,7 +861,6 @@ if __name__ == "__main__":
             metrics=args.obs_cols,
             directions=args.directions,
             alphas=args.alphas,
-            l1_ratios=args.l1_ratios,
             n_splits=args.n_splits,
             max_iter=args.n_iter,
             seed=args.seed,
@@ -886,13 +886,13 @@ if __name__ == "__main__":
             adata.obs["dropkick_score"],
             adata.obs["dropkick_label"],
             adata.var["dropkick_hvgs"],
-            adata.var.loc[tmp.var.highly_variable, "dropkick_coef"],
+            adata.var["dropkick_coef"],
         ) = (
             tmp.obs["train"],
             tmp.obs["dropkick_score"],
             tmp.obs["dropkick_label"],
             tmp.var["highly_variable"],
-            regression_model.coef_.squeeze(),
+            tmp.var["dropkick_coef"],
         )
         adata.uns["pipeline_args"] = {
             "counts": args.counts,
@@ -900,7 +900,7 @@ if __name__ == "__main__":
             "directions": args.directions,
             "alphas": args.alphas,
             "chosen_alpha": alpha_,
-            "chosen_l1_ratio": l1_ratio_,
+            "chosen_lambda": lambda_,
             "mito_names": args.mito_names,
             "n_hvgs": args.n_hvgs,
             "thresh_method": args.thresh_method,
