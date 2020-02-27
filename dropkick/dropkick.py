@@ -121,6 +121,7 @@ def check_dir_exists(path):
 def recipe_dropkick(
     adata,
     X_final="raw_counts",
+    filter=True,
     calc_metrics=True,
     mito_names="^mt-|^MT-",
     n_ambient=10,
@@ -135,6 +136,7 @@ def recipe_dropkick(
         adata (AnnData.AnnData): object with raw counts data in .X
         X_final (str): which normalization should be left in .X slot?
             ("raw_counts","arcsinh_norm","norm_counts")
+        filter (bool): remove cells and genes with zero total counts
         calc_metrics (bool): if False, do not calculate metrics in .obs/.var
         mito_names (str): substring encompassing mitochondrial gene names for
             calculation of mito expression
@@ -154,6 +156,16 @@ def recipe_dropkick(
         - arcsinh transformation of normalized counts (adata.X)
         - highly variable genes if desired (adata.var["highly_variable"])
     """
+    if filter:
+        # remove cells and genes with zero total counts
+        orig_shape = adata.shape
+        sc.pp.filter_cells(adata, min_genes=10)
+        sc.pp.filter_genes(adata, min_counts=1)
+        if adata.shape[0] != orig_shape[0]:
+            print("Removed {} cells with zero total counts".format(orig_shape[0]-adata.shape[0]))
+        if adata.shape[1] != orig_shape[1]:
+            print("Removed {} genes with zero total counts".format(orig_shape[1]-adata.shape[1]))
+
     # store raw counts before manipulation
     adata.layers["raw_counts"] = adata.X.copy()
 
@@ -163,7 +175,7 @@ def recipe_dropkick(
         # identify mitochondrial genes
         adata.var["mito"] = adata.var_names.str.contains(mito_names)
         # identify putative ambient genes by lowest dropout pct (top 10)
-        adata.var["ambient"] = adata.X.astype(bool).sum(axis=0) / adata.n_obs
+        adata.var["ambient"] = np.array(adata.X.astype(bool).sum(axis=0) / adata.n_obs).squeeze()
         if verbose:
             print(
                 "Top {} ambient genes have dropout rates between {} and {} percent:\n\t{}".format(
@@ -375,6 +387,7 @@ def regression_pipe(
     recipe_dropkick(
         adata,
         X_final="arcsinh_norm",
+        filter=True,
         calc_metrics=True,
         mito_names=mito_names,
         n_hvgs=n_hvgs,
