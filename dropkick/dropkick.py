@@ -3,61 +3,6 @@
 Automated QC classifier pipeline
 
 @author: C Heiser
-
-usage: dropkick.py [-h] -c COUNTS [--obs-cols OBS_COLS [OBS_COLS ...]]
-                   [--directions DIRECTIONS [DIRECTIONS ...]]
-                   [--thresh-method THRESH_METHOD] [--mito-names MITO_NAMES]
-                   [--n-hvgs N_HVGS] [--seed SEED] [--output-dir [OUTPUT_DIR]]
-                   [--alphas [ALPHAS [ALPHAS ...]]] [--n-lambda N_LAMBDA]
-                   [--cut-point CUT_POINT] [--n-splits N_SPLITS]
-                   [--n-iter N_ITER] [--n-jobs N_JOBS] [--pos-frac POS_FRAC]
-                   [--neg-frac NEG_FRAC]
-                   {regression,twostep}
-
-positional arguments:
-  {regression,twostep}
-
-optional arguments:
-  -h, --help            show this help message and exit
-  -c COUNTS, --counts COUNTS
-                        [all] Input (cell x gene) counts matrix as .h5ad or
-                        tab delimited text file
-  --obs-cols OBS_COLS [OBS_COLS ...]
-                        [all] Heuristics for thresholding. Several can be
-                        specified with '--obs-cols arcsinh_n_genes_by_counts
-                        pct_counts_ambient'
-  --directions DIRECTIONS [DIRECTIONS ...]
-                        [all] Direction of thresholding for each heuristic.
-                        Several can be specified with '--obs-cols above below'
-  --thresh-method THRESH_METHOD
-                        [all] Method used for automatic thresholding on
-                        heuristics. One of ['otsu','li','mean']
-  --mito-names MITO_NAMES
-                        [all] Substring or regex defining mitochondrial genes
-  --n-hvgs N_HVGS       [all] Number of highly variable genes for training
-                        model
-  --seed SEED           [all] Random state for cross validation [regression]
-                        or sampling training set [twostep]
-  --output-dir [OUTPUT_DIR]
-                        [all] Output directory. Output will be placed in
-                        [output-dir]/[name]...
-  --alphas [ALPHAS [ALPHAS ...]]
-                        [regression] Ratios between l1 and l2 regularization
-                        for regression model
-  --n-lambda N_LAMBDA   [regression] Number of lambda (regularization
-                        strength) values to test
-  --cut-point CUT_POINT
-                        [regression] The cut point to use for selecting
-                        lambda_best
-  --n-splits N_SPLITS   [regression] Number of splits for cross validation
-  --n-iter N_ITER       [regression] Maximum number of iterations for
-                        optimization
-  --n-jobs N_JOBS       [regression] Maximum number of threads for cross
-                        validation
-  --pos-frac POS_FRAC   [twostep] Fraction of cells below threshold to sample
-                        for training set
-  --neg-frac NEG_FRAC   [twostep] Fraction of cells above threshold to sample
-                        for training set
 """
 import argparse
 import sys
@@ -68,9 +13,7 @@ import scanpy as sc
 import time
 import threading
 from skimage.filters import threshold_li, threshold_otsu, threshold_mean
-from sklearn.ensemble import RandomForestClassifier
 
-from PU_twostep import twoStep
 from logistic import LogitNet
 
 
@@ -80,19 +23,21 @@ class Spinner:
 
     @staticmethod
     def spinning_cursor():
-        while 1: 
-            for cursor in '|/-\\': yield cursor
+        while 1:
+            for cursor in "|/-\\":
+                yield cursor
 
     def __init__(self, delay=None):
         self.spinner_generator = self.spinning_cursor()
-        if delay and float(delay): self.delay = delay
+        if delay and float(delay):
+            self.delay = delay
 
     def spinner_task(self):
         while self.busy:
             sys.stdout.write(next(self.spinner_generator))
             sys.stdout.flush()
             time.sleep(self.delay)
-            sys.stdout.write('\b')
+            sys.stdout.write("\b")
             sys.stdout.flush()
 
     def __enter__(self):
@@ -104,7 +49,6 @@ class Spinner:
         time.sleep(self.delay)
         if exception is not None:
             return False
-
 
 
 def check_dir_exists(path):
@@ -162,9 +106,17 @@ def recipe_dropkick(
         sc.pp.filter_cells(adata, min_genes=10)
         sc.pp.filter_genes(adata, min_counts=1)
         if adata.shape[0] != orig_shape[0]:
-            print("Removed {} cells with zero total counts".format(orig_shape[0]-adata.shape[0]))
+            print(
+                "Ignoring {} cells with zero total counts".format(
+                    orig_shape[0] - adata.shape[0]
+                )
+            )
         if adata.shape[1] != orig_shape[1]:
-            print("Removed {} genes with zero total counts".format(orig_shape[1]-adata.shape[1]))
+            print(
+                "Ignoring {} genes with zero total counts".format(
+                    orig_shape[1] - adata.shape[1]
+                )
+            )
 
     # store raw counts before manipulation
     adata.layers["raw_counts"] = adata.X.copy()
@@ -175,7 +127,9 @@ def recipe_dropkick(
         # identify mitochondrial genes
         adata.var["mito"] = adata.var_names.str.contains(mito_names)
         # identify putative ambient genes by lowest dropout pct (top 10)
-        adata.var["ambient"] = np.array(adata.X.astype(bool).sum(axis=0) / adata.n_obs).squeeze()
+        adata.var["ambient"] = np.array(
+            adata.X.astype(bool).sum(axis=0) / adata.n_obs
+        ).squeeze()
         if verbose:
             print(
                 "Top {} ambient genes have dropout rates between {} and {} percent:\n\t{}".format(
@@ -343,11 +297,11 @@ def regression_pipe(
     thresh_method="otsu",
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(0.1, 0.15, 0.2),
+    alphas=(0.1, 0.2),
     n_lambda=10,
     cut_point=1,
-    n_splits=3,
-    max_iter=1000,
+    n_splits=5,
+    max_iter=100000,
     n_jobs=-1,
     seed=18,
 ):
@@ -384,8 +338,9 @@ def regression_pipe(
             'dropkick_label' columns in .obs
     """
     # 0) preprocess counts and calculate required QC metrics
+    a = adata.copy()  # make copy of anndata before manipulating
     recipe_dropkick(
-        adata,
+        a,
         X_final="arcsinh_norm",
         filter=True,
         calc_metrics=True,
@@ -397,11 +352,11 @@ def regression_pipe(
 
     # 1) threshold chosen heuristics using automated method
     print("Thresholding on heuristics for training labels: {}".format(metrics))
-    adata_thresh = auto_thresh_obs(adata, method=thresh_method, obs_cols=metrics)
+    adata_thresh = auto_thresh_obs(a, method=thresh_method, obs_cols=metrics)
 
     # 2) create labels from combination of thresholds
     filter_thresh_obs(
-        adata,
+        a,
         adata_thresh,
         obs_cols=metrics,
         directions=directions,
@@ -409,17 +364,25 @@ def regression_pipe(
         name="train",
     )
 
-    X = adata.X[:, adata.var.highly_variable].copy()  # final X is HVGs
-    y = adata.obs["train"].copy(deep=True)  # final y is "train" labels from step 2
+    X = a.X[:, a.var.highly_variable].copy()  # final X is HVGs
+    y = a.obs["train"].copy(deep=True)  # final y is "train" labels from step 2
 
-    if len(alphas)>1:
+    if len(alphas) > 1:
         # 3.1) cross-validation to choose alpha and lambda values
         cv_scores = {"rc": [], "lambda": [], "alpha": [], "score": []}  # dictionary o/p
         for alpha in alphas:
             print("Training LogitNet with alpha: {}".format(alpha), end="  ")
-            rc = LogitNet(alpha=alpha, n_lambda=n_lambda, cut_point=cut_point, n_splits=n_splits, max_iter=max_iter, n_jobs=n_jobs, random_state=seed)
+            rc = LogitNet(
+                alpha=alpha,
+                n_lambda=n_lambda,
+                cut_point=cut_point,
+                n_splits=n_splits,
+                max_iter=max_iter,
+                n_jobs=n_jobs,
+                random_state=seed,
+            )
             with Spinner():
-                rc.fit(adata=adata, y=y, n_hvgs=n_hvgs)
+                rc.fit(adata=a, y=y, n_hvgs=n_hvgs)
             cv_scores["rc"].append(rc)
             cv_scores["alpha"].append(alpha)
             cv_scores["lambda"].append(rc.lambda_best_)
@@ -438,367 +401,134 @@ def regression_pipe(
     else:
         # 3.2) train model with single alpha value
         print("Training LogitNet with alpha: {}".format(alphas[0]), end="  ")
-        rc_ = LogitNet(alpha=alphas[0], n_lambda=n_lambda, cut_point=cut_point, n_splits=n_splits, max_iter=max_iter, n_jobs=n_jobs, random_state=seed)
+        rc_ = LogitNet(
+            alpha=alphas[0],
+            n_lambda=n_lambda,
+            cut_point=cut_point,
+            n_splits=n_splits,
+            max_iter=max_iter,
+            n_jobs=n_jobs,
+            random_state=seed,
+        )
         with Spinner():
-            rc_.fit(adata=adata, y=y, n_hvgs=n_hvgs)
+            rc_.fit(adata=a, y=y, n_hvgs=n_hvgs)
         lambda_, alpha_ = rc_.lambda_best_, alphas[0]
 
-    # 5) use ridge model to assign scores and labels
+    # 4) use ridge model to assign scores and labels to original adata
     print("Assigning scores and labels")
-    adata.obs["dropkick_score"] = rc_.predict_proba(X)[:, 1]
-    adata.obs["dropkick_label"] = rc_.predict(X)
-    adata.var.loc[adata.var.highly_variable, "dropkick_coef"] = rc_.coef_.squeeze()
+    adata.obs.loc[a.obs_names, "dropkick_score"] = rc_.predict_proba(X)[:, 1]
+    adata.obs.dropkick_score.fillna(0, inplace=True)
+    adata.obs.loc[a.obs_names, "dropkick_label"] = rc_.predict(X)
+    adata.obs.dropkick_label.fillna(0, inplace=True)
+    adata.var.loc[a.var.highly_variable, "dropkick_coef"] = rc_.coef_.squeeze()
+
+    # 5) save model hyperparameters in .uns
+    adata.uns["dropkick_thresholds"] = adata_thresh
+    adata.uns["dropkick_args"] = {
+        "n_hvgs": n_hvgs,
+        "thresh_method": thresh_method,
+        "metrics": metrics,
+        "directions": directions,
+        "alphas": alphas,
+        "chosen_alpha": alpha_,
+        "chosen_lambda": lambda_,
+        "n_lambda": n_lambda,
+        "cut_point": cut_point,
+        "n_splits": n_splits,
+        "max_iter": max_iter,
+        "seed": seed,
+    }  # save command-line arguments to .uns for reference
 
     print("Done!\n")
-    return adata_thresh, rc_, lambda_, alpha_
-
-
-def sampling_probabilities(
-    adata, obs_col, thresh, direction="below", inclusive=True, suffix="prob", plot=True
-):
-    """
-    generate sampling probabilities from threshold on metric in adata.obs
-
-    Parameters:
-        adata (anndata.AnnData): object containing unfiltered scRNA-seq data
-        obs_col (str): name of column to threshold from adata.obs
-        thresh (float): threshold value for corresponding obs_col
-        direction (str): 'below' or 'above', indicating which direction to make probabilities for
-        inclusive (bool): include cells at the threshold? default True.
-        suffix (str): string to append to end of obs_col name for making new adata.obs column
-
-    Returns:
-        updated adata with new .obs column containing sampling probabilities
-    """
-    # initialize new .obs column
-    adata.obs["{}_{}".format(obs_col, suffix)] = 0
-    # if below threshold, make probabilities inversely proportional to values
-    if direction == "below":
-        if inclusive:
-            adata.obs.loc[
-                adata.obs[obs_col] <= thresh, "{}_{}".format(obs_col, suffix)
-            ] = np.reciprocal(adata.obs.loc[adata.obs[obs_col] <= thresh, obs_col] + 1)
-        else:
-            adata.obs.loc[
-                adata.obs[obs_col] < thresh, "{}_{}".format(obs_col, suffix)
-            ] = np.reciprocal(adata.obs.loc[adata.obs[obs_col] < thresh, obs_col] + 1)
-    # if above threshold, probabilities are proportional to values
-    elif direction == "above":
-        if inclusive:
-            adata.obs.loc[
-                adata.obs[obs_col] >= thresh, "{}_{}".format(obs_col, suffix)
-            ] = adata.obs.loc[adata.obs[obs_col] >= thresh, obs_col]
-        else:
-            adata.obs.loc[
-                adata.obs[obs_col] > thresh, "{}_{}".format(obs_col, suffix)
-            ] = adata.obs.loc[adata.obs[obs_col] > thresh, obs_col]
-    else:
-        raise ValueError(
-            "Please provide a valid threshold direction ('above' or 'below')."
-        )
-    # normalize values to create probabilities (sum to 1)
-    adata.obs["{}_{}".format(obs_col, suffix)] /= adata.obs[
-        "{}_{}".format(obs_col, suffix)
-    ].sum()
-    # plot results on histogram
-    if plot:
-        new_order = np.argsort(adata.obs[obs_col])[::-1]
-        tmp = adata[new_order, :].copy()
-        fig, ax = plt.subplots(figsize=(5, 4))
-        ax.set_title(obs_col)
-        ax.set_ylabel("cells", color="b")
-        ax.hist(tmp.obs[obs_col], bins=40, color="b")
-        ax.tick_params(axis="y", labelcolor="b")
-        ax2 = ax.twinx()
-        ax2.set_ylabel("{}_{}".format(obs_col, suffix), color="g")
-        ax2.plot(tmp.obs[obs_col], tmp.obs["{}_{}".format(obs_col, suffix)], color="g")
-        ax2.tick_params(axis="y", labelcolor="g")
-        plt.axvline(thresh, color="r")
-        fig.tight_layout()
-        plt.show()
-
-
-def generate_training_labels(
-    adata, pos_prob, pos_size, neg_prob=None, neg_size=None, name="train", seed=18
-):
-    """
-    sample cells for training set
-
-    Parameters:
-        adata (anndata.AnnData): object containing unfiltered scRNA-seq data
-        pos_prob (pd.Series): column of adata.obs containing probabilities of drawing positive label (1)
-        pos_size (int): number of cells to assign positive label (1) to
-        neg_prob (pd.Series or None): column of adata.obs containing probabilities of drawing negative label (0)
-        neg_size (int or None): number of cells to assign negative label (0) to
-        name (str): name of .obs col containing final labels
-        seed (int): random seed for sampling
-
-    Returns:
-        updated adata with new .obs column containing sampled training labels
-    """
-    np.random.seed(seed=seed)  # set seed for np.random.choice
-    adata.obs[name] = -1  # initialize column with all cells unlabeled (-1)
-    if neg_size is not None:
-        adata.obs.iloc[
-            np.random.choice(
-                a=len(adata.obs), size=neg_size, replace=False, p=neg_prob
-            ),
-            adata.obs.columns.get_loc(name),
-        ] = 0
-    adata.obs.iloc[
-        np.random.choice(a=len(adata.obs), size=pos_size, replace=False, p=pos_prob),
-        adata.obs.columns.get_loc(name),
-    ] = 1
-
-
-def twostep_pipe(
-    adata,
-    clf,
-    mito_names="^mt-|^MT-",
-    n_hvgs=2000,
-    thresh_method="li",
-    obs_cols=["arcsinh_n_genes_by_counts", "pct_counts_mito",],
-    directions=["above", "below"],
-    pos_frac=0.7,
-    neg_frac=0.3,
-    seed=18,
-):
-    """
-    generate iteratively-trained RandomForest model of cell quality
-
-    Parameters:
-        adata (anndata.AnnData): object containing unfiltered, raw scRNA-seq
-            counts in .X layer
-        clf (sklearn classifier): classifier object such as RandomForestClassifier
-        mito_names (str): substring encompassing mitochondrial gene names for
-            calculation of mito expression
-        n_hvgs (int or None): number of HVGs to calculate using Seurat method
-            if None, do not calculate HVGs
-        thresh_method (str): one of 'li' (default), 'otsu', or 'mean'
-        obs_cols (list of str): name of column(s) to threshold from adata.obs
-        directions (list of str): 'below' or 'above', indicating which
-            direction to keep (label=1)
-        pos_frac (float): fraction of positives (bad cells) to sample for training
-        neg_frac (float): fraction of negative (good cells) to sample for training
-        seed (int): random state for sampling training set
-
-    Returns:
-        adata_thresh (dict): dictionary of automated thresholds on heuristics
-        rc (RidgeClassifierCV): trained ridge classifier
-
-        updated adata inplace to include 'train', 'dropkick_score', and
-            'dropkick_label' columns in .obs
-    """
-    # 1) preprocess counts and calculate required QC metrics
-    print("Preprocessing counts and calculating metrics")
-    recipe_dropkick(
-        adata, mito_names=mito_names, n_hvgs=n_hvgs, target_sum=None, verbose=True
-    )
-
-    # 2) threshold chosen heuristics using automated method
-    print("Thresholding on heuristics for training labels")
-    adata_thresh = auto_thresh_obs(adata, method=thresh_method, obs_cols=obs_cols)
-
-    # 3) create labels from combination of thresholds
-    filter_thresh_obs(
-        adata,
-        adata_thresh,
-        obs_cols=obs_cols,
-        directions=directions,
-        inclusive=True,
-        name="thresh_filter",
-    )
-
-    # 4) calculate sampling probabilities from thresholded heuristics
-    adata.obs["neg_prob"] = 0
-    adata.obs["pos_prob"] = 0
-    for i in range(len(obs_cols)):
-        print("Generating sampling probabilities from {}".format(obs_cols[i]))
-        sampling_probabilities(
-            adata,
-            obs_col=obs_cols[i],
-            thresh=adata_thresh[obs_cols[i]],
-            direction=directions[i],
-            inclusive=True,
-            suffix="neg",
-            plot=False,
-        )
-        adata.obs["neg_prob"] += adata.obs[
-            "{}_neg".format(obs_cols[i])
-        ]  # add probabilities to combined vector
-        if directions[i] == "above":
-            pos_dir = "below"
-        elif directions[i] == "below":
-            pos_dir = "above"
-        sampling_probabilities(
-            adata,
-            obs_col=obs_cols[i],
-            thresh=adata_thresh[obs_cols[i]],
-            direction=pos_dir,
-            inclusive=True,
-            suffix="pos",
-            plot=False,
-        )
-        adata.obs["pos_prob"] += adata.obs[
-            "{}_pos".format(obs_cols[i])
-        ]  # add probabilities to combined vector
-    # normalize combined probabilities
-    adata.obs["neg_prob"] /= adata.obs["neg_prob"].sum()
-    adata.obs["pos_prob"] /= adata.obs["pos_prob"].sum()
-
-    # 5) generate training labels
-    print(
-        "Picking {} positives (empty droplets/dead cells) and {} negatives (live cells) for training".format(
-            int(pos_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
-            int(neg_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
-        )
-    )
-    generate_training_labels(
-        adata,
-        pos_prob=adata.obs["pos_prob"],
-        pos_size=int(pos_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
-        neg_prob=adata.obs["neg_prob"],
-        neg_size=int(neg_frac * (adata.n_obs - adata.obs["thresh_filter"].sum())),
-        name="train",
-        seed=seed,
-    )
-
-    # 4) train two-step classifier
-    y = adata.obs["train"].copy(deep=True)  # training labels defined above
-    if n_hvgs is None:
-        # if no HVGs, train on all genes. NOTE: this slows computation considerably.
-        X = adata.X
-    else:
-        # use HVGs if provided
-        X = adata.X[:, adata.var["highly_variable"] == True]
-    print("Training two-step classifier:")
-    adata.obs["dropkick_score"], adata.obs["dropkick_label"] = twoStep(
-        clf=clf, X=X, y=y, thresh="min", n_iter=18
-    )
-    print(
-        "Predicting remaining {} unlabeled barcodes with trained classifier.".format(
-            (y == -1).sum()
-        )
-    )
-    adata.obs.loc[y == -1, "dropkick_label"] = clf.predict(
-        X[y == -1]
-    )  # predict remaining unlabeled cells using trained clf
-    adata.obs["dropkick_label"] = (~adata.obs["dropkick_label"].astype(bool)).astype(
-        int
-    )  # flip labels so 1 is good cell
-
-    print("Done!\n")
-    return adata_thresh, clf
-
+    return rc_
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", type=str, choices=["regression", "twostep"],
-    )
-    parser.add_argument(
-        "-c",
-        "--counts",
+        "counts",
         type=str,
-        help="[all] Input (cell x gene) counts matrix as .h5ad or tab delimited text file",
+        help="Input (cell x gene) counts matrix as .h5ad or tab delimited text file",
         required=True,
     )
     parser.add_argument(
         "--obs-cols",
         type=str,
-        help="[all] Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_ambient'",
+        help="Heuristics for thresholding. Several can be specified with '--obs-cols arcsinh_n_genes_by_counts pct_counts_ambient'",
         nargs="+",
         default=["arcsinh_n_genes_by_counts", "pct_counts_ambient"],
     )
     parser.add_argument(
         "--directions",
         type=str,
-        help="[all] Direction of thresholding for each heuristic. Several can be specified with '--obs-cols above below'",
+        help="Direction of thresholding for each heuristic. Several can be specified with '--obs-cols above below'",
         nargs="+",
         default=["above", "below"],
     )
     parser.add_argument(
         "--thresh-method",
         type=str,
-        help="[all] Method used for automatic thresholding on heuristics. One of ['otsu','li','mean']",
+        help="Method used for automatic thresholding on heuristics. One of ['otsu','li','mean']. Default 'Otsu'",
         default="otsu",
     )
     parser.add_argument(
         "--mito-names",
         type=str,
-        help="[all] Substring or regex defining mitochondrial genes",
+        help="Substring or regex defining mitochondrial genes. Default '^mt-|^MT-'",
         default="^mt-|^MT-",
     )
     parser.add_argument(
         "--n-hvgs",
         type=int,
-        help="[all] Number of highly variable genes for training model",
+        help="Number of highly variable genes for training model. Default 2000",
         default=2000,
     )
     parser.add_argument(
-        "--seed",
-        type=int,
-        help="[all] Random state for cross validation [regression] or sampling training set [twostep]",
-        default=18,
+        "--seed", type=int, help="Random state for cross validation", default=18,
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        help="[all] Output directory. Output will be placed in [output-dir]/[name]...",
+        help="Output directory. Output will be placed in [output-dir]/[name]...",
         nargs="?",
         default=".",
     )
-
     parser.add_argument(
         "--alphas",
         type=float,
-        help="[regression] Ratios between l1 and l2 regularization for regression model",
+        help="Ratios between l1 and l2 regularization for regression model",
         nargs="*",
-        default=[0.1, 0.15, 0.2],
+        default=[0.1, 0.2],
     )
     parser.add_argument(
         "--n-lambda",
         type=int,
-        help="[regression] Number of lambda (regularization strength) values to test",
+        help="Number of lambda (regularization strength) values to test. Default 10",
         default=10,
     )
     parser.add_argument(
         "--cut-point",
         type=float,
-        help="[regression] The cut point to use for selecting lambda_best",
+        help="The cut point to use for selecting lambda_best. Default 1.0",
         default=1.0,
     )
     parser.add_argument(
         "--n-splits",
         type=int,
-        help="[regression] Number of splits for cross validation",
-        default=3,
+        help="Number of splits for cross validation. Default 5",
+        default=5,
     )
     parser.add_argument(
         "--n-iter",
         type=int,
-        help="[regression] Maximum number of iterations for optimization",
+        help="Maximum number of iterations for optimization. Default 100000",
         default=100000,
     )
     parser.add_argument(
         "--n-jobs",
         type=int,
-        help="[regression] Maximum number of threads for cross validation",
+        help="Maximum number of threads for cross validation. Default -1",
         default=-1,
-    )
-
-    parser.add_argument(
-        "--pos-frac",
-        type=float,
-        help="[twostep] Fraction of cells below threshold to sample for training set",
-        default=0.7,
-    )
-    parser.add_argument(
-        "--neg-frac",
-        type=float,
-        help="[twostep] Fraction of cells above threshold to sample for training set",
-        default=0.3,
     )
 
     args = parser.parse_args()
@@ -808,140 +538,44 @@ if __name__ == "__main__":
     adata = sc.read(args.counts)
     print(" - {} barcodes and {} genes".format(adata.shape[0], adata.shape[1]))
 
-    # create copy of AnnData to manipulate
-    tmp = adata.copy()
-
     # check that output directory exists, create it if needed.
     check_dir_exists(args.output_dir)
     # get basename of file for writing outputs
     name = os.path.splitext(os.path.basename(args.counts))[0]
 
-    if args.command == "regression":
-        thresholds, regression_model, lambda_, alpha_ = regression_pipe(
-            tmp,
-            mito_names=args.mito_names,
-            n_hvgs=args.n_hvgs,
-            thresh_method=args.thresh_method,
-            metrics=args.obs_cols,
-            directions=args.directions,
-            alphas=args.alphas,
-            n_lambda=args.n_lambda,
-            cut_point=args.cut_point,
-            n_splits=args.n_splits,
-            max_iter=args.n_iter,
-            n_jobs=args.n_jobs,
-            seed=args.seed,
+    (regression_model,) = regression_pipe(
+        adata,
+        mito_names=args.mito_names,
+        n_hvgs=args.n_hvgs,
+        thresh_method=args.thresh_method,
+        metrics=args.obs_cols,
+        directions=args.directions,
+        alphas=args.alphas,
+        n_lambda=args.n_lambda,
+        cut_point=args.cut_point,
+        n_splits=args.n_splits,
+        max_iter=args.n_iter,
+        n_jobs=args.n_jobs,
+        seed=args.seed,
+    )
+    # generate plot of chosen training thresholds on heuristics
+    print(
+        "Saving threshold plots to {}/{}_{}_thresholds.png".format(
+            args.output_dir, name, args.thresh_method
         )
-        # generate plot of chosen training thresholds on heuristics
-        print(
-            "Saving threshold plots to {}/{}_{}_thresholds.png".format(
-                args.output_dir, name, args.thresh_method
-            )
+    )
+    thresh_plt = plot_thresh_obs(
+        adata, adata.uns["dropkick_thresholds"], bins=40, show=False
+    )
+    plt.savefig(
+        "{}/{}_{}_thresholds.png".format(args.output_dir, name, args.thresh_method)
+    )
+    # save new labels
+    print(
+        "Writing updated counts to {}/{}_{}.h5ad".format(
+            args.output_dir, name, args.command
         )
-        thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
-        plt.savefig(
-            "{}/{}_{}_thresholds.png".format(args.output_dir, name, args.thresh_method)
-        )
-        # save new labels
-        print(
-            "Writing updated counts to {}/{}_{}.h5ad".format(
-                args.output_dir, name, args.command
-            )
-        )
-        (
-            adata.obs["dropkick_train"],
-            adata.obs["dropkick_score"],
-            adata.obs["dropkick_label"],
-            adata.var["dropkick_hvgs"],
-            adata.var["dropkick_coef"],
-        ) = (
-            tmp.obs["train"],
-            tmp.obs["dropkick_score"],
-            tmp.obs["dropkick_label"],
-            tmp.var["highly_variable"],
-            tmp.var["dropkick_coef"],
-        )
-        adata.uns["pipeline_args"] = {
-            "counts": args.counts,
-            "n_hvgs": args.n_hvgs,
-            "thresh_method": args.thresh_method,
-            "obs_cols": args.obs_cols,
-            "directions": args.directions,
-            "alphas": args.alphas,
-            "chosen_alpha": alpha_,
-            "chosen_lambda": lambda_,
-            "n_lambda": args.n_lambda,
-            "cut_point": args.cut_point,
-            "n_splits": args.n_splits,
-            "max_iter": args.n_iter,
-            "seed": args.seed,
-        }  # save command-line arguments to .uns for reference
-        adata.write(
-            "{}/{}_{}.h5ad".format(args.output_dir, name, args.command),
-            compression="gzip",
-        )
-
-    elif args.command == "twostep":
-        thresholds, twostep_model = twostep_pipe(
-            tmp,
-            clf=RandomForestClassifier(
-                n_estimators=500, n_jobs=-1
-            ),  # use default clf for now
-            mito_names=args.mito_names,
-            n_hvgs=args.n_hvgs,
-            thresh_method=args.thresh_method,
-            obs_cols=args.obs_cols,
-            directions=args.directions,
-            pos_frac=args.pos_frac,
-            neg_frac=args.neg_frac,
-            seed=args.seed,
-        )
-        # generate plot of chosen training thresholds on heuristics
-        print(
-            "Saving threshold plots to {}/{}_{}_thresholds.png".format(
-                args.output_dir, name, args.thresh_method
-            )
-        )
-        thresh_plt = plot_thresh_obs(tmp, thresholds, bins=40, show=False)
-        plt.savefig(
-            "{}/{}_{}_thresholds.png".format(args.output_dir, name, args.thresh_method)
-        )
-        # save new labels
-        print(
-            "Writing updated counts to {}/{}_{}.h5ad".format(
-                args.output_dir, name, args.command
-            )
-        )
-        (
-            adata.obs["train"],
-            adata.obs["dropkick_score"],
-            adata.obs["dropkick_label"],
-            adata.obs["pos_prob"],
-            adata.obs["neg_prob"],
-        ) = (
-            tmp.obs["train"],
-            tmp.obs["dropkick_score"],
-            tmp.obs["dropkick_label"],
-            tmp.obs["pos_prob"],
-            tmp.obs["neg_prob"],
-        )
-        adata.uns["pipeline_args"] = {
-            "counts": args.counts,
-            "obs_cols": args.obs_cols,
-            "directions": args.directions,
-            "mito_names": args.mito_names,
-            "n_hvgs": args.n_hvgs,
-            "thresh_method": args.thresh_method,
-            "pos_frac": args.pos_frac,
-            "neg_frac": args.neg_frac,
-            "seed": args.seed,
-        }  # save command-line arguments to .uns for reference
-        adata.write(
-            "{}/{}_{}.h5ad".format(args.output_dir, name, args.command),
-            compression="gzip",
-        )
-
-    else:
-        raise ValueError(
-            "Please provide a valid filtering command ('regression', 'twostep')"
-        )
+    )
+    adata.write(
+        "{}/{}_dropkick.h5ad".format(args.output_dir, name), compression="gzip",
+    )
