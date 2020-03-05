@@ -33,7 +33,7 @@ import scanpy as sc
 import seaborn as sns
 from matplotlib import gridspec
 from scipy.stats import mannwhitneyu
-from dropkick import recipe_dropkick
+from dropkick import recipe_dropkick, coef_inventory
 
 
 def set_diff(adata, labels, metrics=None):
@@ -150,28 +150,6 @@ def plot_set_obs(
         plt.show()
     else:
         return fig
-
-
-def coef_inventory(adata, n=10):
-    """
-    return highest and lowest coefficient values from logistic regression model,
-    along with sparsity
-
-    Parameters:
-        adata (anndata.AnnData): object generated from dropkick.py ("regression")
-        n (int): number of genes to show at top and bottom of coefficient list
-
-    Returns:
-        prints top and bottom n genes by their coefficient values
-    """
-    print("\nTop HVGs by coefficient value (good cells):")
-    print(adata.var.loc[-adata.var.dropkick_coef.isna(), "dropkick_coef"].nlargest(n))
-    print("\nBottom HVGs by coefficient value (bad droplets):")
-    print(adata.var.loc[-adata.var.dropkick_coef.isna(), "dropkick_coef"].nsmallest(n))
-    n_zero = (adata.var.dropkick_coef==0).sum()
-    n_coef = (-adata.var.dropkick_coef.isna()).sum()
-    sparsity = round((n_zero/n_coef)*100, 3)
-    print("\n{} coefficients equal to zero. Model sparsity: {} %\n".format(n_zero, sparsity))
 
 
 def cnmf_usage_test(adata, labels):

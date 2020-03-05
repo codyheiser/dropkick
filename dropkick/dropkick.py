@@ -290,14 +290,14 @@ def filter_thresh_obs(
                 ] = 0
 
 
-def regression_pipe(
+def dropkick(
     adata,
     mito_names="^mt-|^MT-",
     n_hvgs=2000,
     thresh_method="otsu",
     metrics=["arcsinh_n_genes_by_counts", "pct_counts_ambient",],
     directions=["above", "below"],
-    alphas=(0.1, 0.2),
+    alphas=[0.1],
     n_lambda=10,
     cut_point=1,
     n_splits=5,
@@ -351,7 +351,7 @@ def regression_pipe(
     )
 
     # 1) threshold chosen heuristics using automated method
-    print("Thresholding on heuristics for training labels: {}".format(metrics))
+    print("Thresholding on heuristics for training labels:\n\t{}".format(metrics))
     adata_thresh = auto_thresh_obs(a, method=thresh_method, obs_cols=metrics)
 
     # 2) create labels from combination of thresholds
@@ -383,6 +383,7 @@ def regression_pipe(
             )
             with Spinner():
                 rc.fit(adata=a, y=y, n_hvgs=n_hvgs)
+            print("\n", end="")
             cv_scores["rc"].append(rc)
             cv_scores["alpha"].append(alpha)
             cv_scores["lambda"].append(rc.lambda_best_)
@@ -412,15 +413,19 @@ def regression_pipe(
         )
         with Spinner():
             rc_.fit(adata=a, y=y, n_hvgs=n_hvgs)
+        print("\n", end="")
         lambda_, alpha_ = rc_.lambda_best_, alphas[0]
 
     # 4) use ridge model to assign scores and labels to original adata
     print("Assigning scores and labels")
     adata.obs.loc[a.obs_names, "dropkick_score"] = rc_.predict_proba(X)[:, 1]
-    adata.obs.dropkick_score.fillna(0, inplace=True)
+    adata.obs.dropkick_score.fillna(0, inplace=True)  # fill ignored cells with zeros
     adata.obs.loc[a.obs_names, "dropkick_label"] = rc_.predict(X)
-    adata.obs.dropkick_label.fillna(0, inplace=True)
-    adata.var.loc[a.var.highly_variable, "dropkick_coef"] = rc_.coef_.squeeze()
+    adata.obs.dropkick_label.fillna(0, inplace=True)  # fill ignored cells with zeros
+    for metric in metrics:
+        adata.obs.loc[a.obs_names, metric] = a.obs[metric]
+        adata.obs[metric].fillna(0, inplace=True)  # fill ignored cells with zeros
+    adata.var.loc[a.var_names[a.var.highly_variable], "dropkick_coef"] = rc_.coef_.squeeze()
 
     # 5) save model hyperparameters in .uns
     adata.uns["dropkick_thresholds"] = adata_thresh
@@ -443,13 +448,34 @@ def regression_pipe(
     return rc_
 
 
+def coef_inventory(adata, n=10):
+    """
+    return highest and lowest coefficient values from logistic regression model,
+    along with sparsity
+
+    Parameters:
+        adata (anndata.AnnData): object generated from dropkick.py ("regression")
+        n (int): number of genes to show at top and bottom of coefficient list
+
+    Returns:
+        prints top and bottom n genes by their coefficient values
+    """
+    print("\nTop HVGs by coefficient value (good cells):")
+    print(adata.var.loc[-adata.var.dropkick_coef.isna(), "dropkick_coef"].nlargest(n))
+    print("\nBottom HVGs by coefficient value (bad droplets):")
+    print(adata.var.loc[-adata.var.dropkick_coef.isna(), "dropkick_coef"].nsmallest(n))
+    n_zero = (adata.var.dropkick_coef==0).sum()
+    n_coef = (-adata.var.dropkick_coef.isna()).sum()
+    sparsity = round((n_zero/n_coef)*100, 3)
+    print("\n{} coefficients equal to zero. Model sparsity: {} %\n".format(n_zero, sparsity))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "counts",
         type=str,
         help="Input (cell x gene) counts matrix as .h5ad or tab delimited text file",
-        required=True,
     )
     parser.add_argument(
         "--obs-cols",
@@ -498,7 +524,7 @@ if __name__ == "__main__":
         type=float,
         help="Ratios between l1 and l2 regularization for regression model",
         nargs="*",
-        default=[0.1, 0.2],
+        default=[0.1],
     )
     parser.add_argument(
         "--n-lambda",
@@ -543,7 +569,7 @@ if __name__ == "__main__":
     # get basename of file for writing outputs
     name = os.path.splitext(os.path.basename(args.counts))[0]
 
-    (regression_model,) = regression_pipe(
+    regression_model = dropkick(
         adata,
         mito_names=args.mito_names,
         n_hvgs=args.n_hvgs,
