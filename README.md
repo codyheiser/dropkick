@@ -3,13 +3,10 @@ Automated cell filtering for single-cell RNA sequencing data.
 
 `dropkick` works primarily with [**Scanpy**](https://icb-scanpy.readthedocs-hosted.com/en/stable/)'s `AnnData` objects, and accepts input files in `.h5ad` or flat (`.csv`, `.tsv`) format. It also writes outputs to `.h5ad` files when called from the command line.
 
-## Requirements
-From command line:  
+#### Install Requirements:
 ```bash
 pip install -r requirements.txt
 ```
-
-You will need an unfiltered barcode-by-gene counts matrix in `.h5ad` (`scanpy.anndata`) format.
 
 ## Usage
 From command line:
